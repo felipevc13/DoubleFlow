@@ -1,0 +1,14 @@
+# Node/Nuxt
+nuxt-ai-mvp/node_modules/
+nuxt-ai-mvp/.output/
+nuxt-ai-mvp/.nuxt/
+nuxt-ai-mvp/.env*
+
+# Python/venv
+extraction_service/.venv/
+extraction_service/__pycache__/
+extraction_service/.env*
+
+# VSCode/IDE
+.vscode/
+.DS_Store
