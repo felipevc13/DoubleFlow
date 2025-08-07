@@ -1,0 +1,22 @@
+{
+  "extends": "./.nuxt/tsconfig.json",
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "noImplicitAny": true,
+    "baseUrl": ".",
+    "paths": {
+      "#imports": ["./.nuxt/imports.d.ts"],
+      "~/*": ["./*"],
+      "~/server/*": ["./server/*"]
+    },
+    "types": ["vitest/globals", "node", "@playwright/test"],
+    "typeRoots": ["./node_modules/@types", "./node_modules", "./types"]
+  },
+  "include": ["**/*.ts", "**/*.tsx", "**/*.vue"],
+  "exclude": ["node_modules", ".nuxt"]
+}

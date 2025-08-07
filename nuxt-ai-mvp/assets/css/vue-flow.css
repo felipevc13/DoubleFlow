@@ -1,0 +1,33 @@
+@import "@vue-flow/core/dist/style.css";
+@import "@vue-flow/core/dist/theme-default.css";
+
+.vue-flow {
+  background-color: #171717;
+}
+
+.vue-flow__edge-path {
+  stroke: #4299e1;
+  stroke-width: 2;
+}
+
+.vue-flow__edge.animated path {
+  stroke-dasharray: 5;
+  animation: dashdraw 1s linear infinite;
+}
+
+@keyframes dashdraw {
+  from {
+    stroke-dashoffset: 10;
+  }
+}
+
+/* Deixe as linhas de conexão pendentes invisíveis até realmente arrastar */
+.vue-flow__connectionline {
+  stroke-opacity: 0 !important;
+  transition: stroke-opacity 0.1s;
+}
+/* Torne visível só durante o drag real */
+body.user-is-dragging-edge .vue-flow__connectionline,
+.vue-flow-wrapper.user-is-dragging-edge .vue-flow__connectionline {
+  stroke-opacity: 1 !important;
+}

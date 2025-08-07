@@ -1,0 +1,378 @@
+# Page snapshot
+
+```yaml
+- complementary:
+  - link "DoubleFlow":
+    - /url: /
+    - img
+    - heading "DoubleFlow" [level=2]
+  - img
+  - button "Nova tarefa"
+  - heading "Tarefas" [level=3]
+  - link "TaskFlow Add Outside Viewport Test":
+    - /url: /task/taskflow-add-outside-viewport-test-9
+  - link "TaskFlow Add Inside Viewport (No Modal Test)":
+    - /url: /task/taskflow-add-inside-viewport-no-modal-test-6
+  - link "Tarefa Teste E2E":
+    - /url: /task/tarefa-teste-e2e-5
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-13
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-12
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-11
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-10
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-9
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-8
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-7
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-18
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-6
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-5
+  - link "TaskFlow Delete Node Test":
+    - /url: /task/taskflow-delete-node-test-8
+  - link "TaskFlow Delete Node Test":
+    - /url: /task/taskflow-delete-node-test-7
+  - link "TaskFlow Delete Node Test":
+    - /url: /task/taskflow-delete-node-test-6
+  - link "TaskFlow Delete Node Test":
+    - /url: /task/taskflow-delete-node-test-5
+  - link "tarefa-drag-add-delete-1749830843123":
+    - /url: /task/tarefa-drag-add-delete-1749830843123
+  - link "tarefa-drag-add-delete-1749830663974":
+    - /url: /task/tarefa-drag-add-delete-1749830663974
+  - link "tarefa-drag-add-delete-1749830503365":
+    - /url: /task/tarefa-drag-add-delete-1749830503365
+  - link "tarefa-drag-add-delete-1749829692822":
+    - /url: /task/tarefa-drag-add-delete-1749829692822
+  - link "tarefa-drag-add-delete-1749829181337":
+    - /url: /task/tarefa-drag-add-delete-1749829181337
+  - link "tarefa-drag-add-delete-1749826685363":
+    - /url: /task/tarefa-drag-add-delete-1749826685363
+  - link "tarefa-drag-add-delete-1749823002346":
+    - /url: /task/tarefa-drag-add-delete-1749823002346
+  - link "tarefa-drag-add-delete-1749822830497":
+    - /url: /task/tarefa-drag-add-delete-1749822830497
+  - link "tarefa-drag-add-delete-1749822503363":
+    - /url: /task/tarefa-drag-add-delete-1749822503363
+  - link "tarefa-drag-add-delete-1749822150350":
+    - /url: /task/tarefa-drag-add-delete-1749822150350
+  - link "Tarefa Sem Sobreposição 1749822005903":
+    - /url: /task/tarefa-sem-sobreposicao-1749822005903
+  - link "Tarefa Sem Sobreposição 1749821725093":
+    - /url: /task/tarefa-sem-sobreposicao-1749821725093
+  - link "TaskFlow Drag Node Test 1749821419749":
+    - /url: /task/taskflow-drag-node-test-1749821419749
+  - link "tarefa-drag-add-delete-1749820940219":
+    - /url: /task/tarefa-drag-add-delete-1749820940219
+  - link "tarefa-drag-add-delete":
+    - /url: /task/tarefa-drag-add-delete-5
+  - link "Tarefa Drag Add Delete":
+    - /url: /task/tarefa-drag-add-delete-4
+  - link "Tarefa Arrastar Global":
+    - /url: /task/tarefa-arrastar-global-6
+  - link "Tarefa Arrastar Global":
+    - /url: /task/tarefa-arrastar-global-5
+  - link "Tarefa Sem Sobreposição 1749814847582":
+    - /url: /task/tarefa-sem-sobreposicao-1749814847582
+  - link "Tarefa Sem Sobreposição 1749814549827":
+    - /url: /task/tarefa-sem-sobreposicao-1749814549827
+  - link "Tarefa Sem Sobreposição 1749760439971":
+    - /url: /task/tarefa-sem-sobreposicao-1749760439971
+  - link "Tarefa Sem Sobreposição 1749760049270":
+    - /url: /task/tarefa-sem-sobreposicao-1749760049270
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-17
+  - link "TaskFlow Drag Node Test 1749759337059":
+    - /url: /task/taskflow-drag-node-test-1749759337059
+  - link "Tarefa Sem Sobreposição cfu8l0":
+    - /url: /task/tarefa-sem-sobreposicao-cfu8l0
+  - link "TaskFlow Drag Node Test 1749750220034":
+    - /url: /task/taskflow-drag-node-test-1749750220034
+  - link "TaskFlow Drag Node Test 1749750140793":
+    - /url: /task/taskflow-drag-node-test-1749750140793
+  - link "TaskFlow Drag Node Test 1749749963209":
+    - /url: /task/taskflow-drag-node-test-1749749963209
+  - link "TaskFlow Drag Node Test":
+    - /url: /task/taskflow-drag-node-test-8
+  - link "TaskFlow Drag Node Test":
+    - /url: /task/taskflow-drag-node-test-7
+  - link "TaskFlow Drag Node Test":
+    - /url: /task/taskflow-drag-node-test-6
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-16
+  - link "Tarefa Sem Sobreposição tp3sz4":
+    - /url: /task/tarefa-sem-sobreposicao-tp3sz4
+  - link "Tarefa Sem Sobreposição mmgxyz":
+    - /url: /task/tarefa-sem-sobreposicao-mmgxyz
+  - link "Tarefa Sem Sobreposição qqr3a3":
+    - /url: /task/tarefa-sem-sobreposicao-qqr3a3
+  - link "Tarefa Sem Sobreposição cjgo2o":
+    - /url: /task/tarefa-sem-sobreposicao-cjgo2o
+  - link "Tarefa Sem Sobreposição w16cm2":
+    - /url: /task/tarefa-sem-sobreposicao-w16cm2
+  - link "Tarefa Sem Sobreposição eu7wk8":
+    - /url: /task/tarefa-sem-sobreposicao-eu7wk8
+  - link "Tarefa Sem Sobreposição hdviau":
+    - /url: /task/tarefa-sem-sobreposicao-hdviau
+  - link "Tarefa Sem Sobreposição g1tfeq":
+    - /url: /task/tarefa-sem-sobreposicao-g1tfeq
+  - link "Tarefa Sem Sobreposição qxyugt":
+    - /url: /task/tarefa-sem-sobreposicao-qxyugt
+  - link "Tarefa Sem Sobreposição 24iyp2":
+    - /url: /task/tarefa-sem-sobreposicao-24iyp2
+  - link "Tarefa Sem Sobreposição 1r16hw":
+    - /url: /task/tarefa-sem-sobreposicao-1r16hw
+  - link "Tarefa Sem Sobreposição nya11l":
+    - /url: /task/tarefa-sem-sobreposicao-nya11l
+  - link "Tarefa Sem Sobreposição y4hdtn":
+    - /url: /task/tarefa-sem-sobreposicao-y4hdtn
+  - link "Tarefa Sem Sobreposição z264g3":
+    - /url: /task/tarefa-sem-sobreposicao-z264g3
+  - link "Tarefa Sem Sobreposição nxux1d":
+    - /url: /task/tarefa-sem-sobreposicao-nxux1d
+  - link "Tarefa Sem Sobreposição kskju5":
+    - /url: /task/tarefa-sem-sobreposicao-kskju5
+  - link "Tarefa Sem Sobreposição b3btyt":
+    - /url: /task/tarefa-sem-sobreposicao-b3btyt
+  - link "Tarefa Sem Sobreposição jy0mb7":
+    - /url: /task/tarefa-sem-sobreposicao-jy0mb7
+  - link "Tarefa Sem Sobreposição lmfx6a":
+    - /url: /task/tarefa-sem-sobreposicao-lmfx6a
+  - link "Tarefa Sem Sobreposição ijio7c":
+    - /url: /task/tarefa-sem-sobreposicao-ijio7c
+  - link "Tarefa Sem Sobreposição kb8imz":
+    - /url: /task/tarefa-sem-sobreposicao-kb8imz
+  - link "Tarefa Sem Sobreposição xjklgn":
+    - /url: /task/tarefa-sem-sobreposicao-xjklgn
+  - link "Tarefa Sem Sobreposição w1p2gy":
+    - /url: /task/tarefa-sem-sobreposicao-w1p2gy
+  - link "Tarefa Sem Sobreposição yr7s7f":
+    - /url: /task/tarefa-sem-sobreposicao-yr7s7f
+  - link "Tarefa Sem Sobreposição 15viqc":
+    - /url: /task/tarefa-sem-sobreposicao-15viqc
+  - link "Tarefa Sem Sobreposição 72nxa2":
+    - /url: /task/tarefa-sem-sobreposicao-72nxa2
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-15
+  - link "Tarefa Sem Sobreposição y0t2pc":
+    - /url: /task/tarefa-sem-sobreposicao-y0t2pc
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-14
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-13
+  - link "Tarefa Sem Sobreposição jjjtj0":
+    - /url: /task/tarefa-sem-sobreposicao-jjjtj0
+  - link "Tarefa Sem Sobreposição zl23si":
+    - /url: /task/tarefa-sem-sobreposicao-zl23si
+  - link "Tarefa Sem Sobreposição wwqb5c":
+    - /url: /task/tarefa-sem-sobreposicao-wwqb5c
+  - link "Tarefa Sem Sobreposição 446jli":
+    - /url: /task/tarefa-sem-sobreposicao-446jli
+  - link "Tarefa Sem Sobreposição 7dpgp9":
+    - /url: /task/tarefa-sem-sobreposicao-7dpgp9
+  - link "Tarefa Sem Sobreposição 4jlqoc":
+    - /url: /task/tarefa-sem-sobreposicao-4jlqoc
+  - link "Tarefa Sem Sobreposição ebyyqu":
+    - /url: /task/tarefa-sem-sobreposicao-ebyyqu
+  - link "Tarefa Sem Sobreposição":
+    - /url: /task/tarefa-sem-sobreposicao-4
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-12
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-11
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-10
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-9
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-8
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-7
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-6
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-5
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-4
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-3
+  - link "Tarefa Sem Sobreposição":
+    - /url: /task/tarefa-sem-sobreposicao-3
+  - link "TaskFlow Drag Node Test":
+    - /url: /task/taskflow-drag-node-test-5
+  - link "Tarefa Arrastar Global":
+    - /url: /task/tarefa-arrastar-global-4
+  - link "Tarefa Drag Add Delete":
+    - /url: /task/tarefa-drag-add-delete-3
+  - link "TaskFlow Delete Node Test":
+    - /url: /task/taskflow-delete-node-test-4
+  - link "TaskFlow Delete Edge Test":
+    - /url: /task/taskflow-delete-edge-test-4
+  - link "TaskFlow Contextual Add Node Test":
+    - /url: /task/taskflow-contextual-add-node-test-5
+  - link "TaskFlow Add Outside Viewport Test":
+    - /url: /task/taskflow-add-outside-viewport-test-8
+  - link "TaskFlow Add Inside Viewport (No Modal Test)":
+    - /url: /task/taskflow-add-inside-viewport-no-modal-test-5
+  - link "Tarefa Teste E2E":
+    - /url: /task/tarefa-teste-e2e-4
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-4
+  - link "oi":
+    - /url: /task/oi
+  - link "teste":
+    - /url: /task/teste-3
+  - link "teste":
+    - /url: /task/teste-2
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-2
+  - link "Tarefa Sem Sobreposição":
+    - /url: /task/tarefa-sem-sobreposicao-2
+  - link "TaskFlow Drag Node Test":
+    - /url: /task/taskflow-drag-node-test-4
+  - link "Tarefa Arrastar Global":
+    - /url: /task/tarefa-arrastar-global-3
+  - link "Tarefa Drag Add Delete":
+    - /url: /task/tarefa-drag-add-delete-2
+  - link "TaskFlow Delete Node Test":
+    - /url: /task/taskflow-delete-node-test-3
+  - link "TaskFlow Delete Edge Test":
+    - /url: /task/taskflow-delete-edge-test-3
+  - link "TaskFlow Contextual Add Node Test":
+    - /url: /task/taskflow-contextual-add-node-test-4
+  - link "TaskFlow Add Outside Viewport Test":
+    - /url: /task/taskflow-add-outside-viewport-test-7
+  - link "TaskFlow Add Inside Viewport (No Modal Test)":
+    - /url: /task/taskflow-add-inside-viewport-no-modal-test-4
+  - link "Tarefa Teste E2E":
+    - /url: /task/tarefa-teste-e2e-3
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-3
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test-1
+  - link "Tarefa Sem Sobreposição":
+    - /url: /task/tarefa-sem-sobreposicao-1
+  - link "TaskFlow Drag Node Test":
+    - /url: /task/taskflow-drag-node-test-3
+  - link "Tarefa Arrastar Global":
+    - /url: /task/tarefa-arrastar-global-2
+  - link "Tarefa Drag Add Delete":
+    - /url: /task/tarefa-drag-add-delete-1
+  - link "TaskFlow Delete Node Test":
+    - /url: /task/taskflow-delete-node-test-2
+  - link "TaskFlow Delete Edge Test":
+    - /url: /task/taskflow-delete-edge-test-2
+  - link "TaskFlow Contextual Add Node Test":
+    - /url: /task/taskflow-contextual-add-node-test-3
+  - link "TaskFlow Add Outside Viewport Test":
+    - /url: /task/taskflow-add-outside-viewport-test-6
+  - link "TaskFlow Add Inside Viewport (No Modal Test)":
+    - /url: /task/taskflow-add-inside-viewport-no-modal-test-3
+  - link "Tarefa Teste E2E":
+    - /url: /task/tarefa-teste-e2e-2
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-2
+  - link "Arraste Sync Test":
+    - /url: /task/arraste-sync-test
+  - link "TaskFlow Drag Node Test":
+    - /url: /task/taskflow-drag-node-test-2
+  - link "Tarefa Arrastar Global":
+    - /url: /task/tarefa-arrastar-global-1
+  - link "Tarefa Drag Add Delete":
+    - /url: /task/tarefa-drag-add-delete
+  - link "TaskFlow Delete Node Test":
+    - /url: /task/taskflow-delete-node-test-1
+  - link "TaskFlow Delete Edge Test":
+    - /url: /task/taskflow-delete-edge-test-1
+  - link "TaskFlow Contextual Add Node Test":
+    - /url: /task/taskflow-contextual-add-node-test-2
+  - link "TaskFlow Add Outside Viewport Test":
+    - /url: /task/taskflow-add-outside-viewport-test-5
+  - link "TaskFlow Add Inside Viewport (No Modal Test)":
+    - /url: /task/taskflow-add-inside-viewport-no-modal-test-2
+  - link "Tarefa Teste E2E":
+    - /url: /task/tarefa-teste-e2e-1
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar-1
+  - link "teste":
+    - /url: /task/teste-1
+  - link "TaskFlow Drag Node Test":
+    - /url: /task/taskflow-drag-node-test-1
+  - link "Tarefa Sem Sobreposição":
+    - /url: /task/tarefa-sem-sobreposicao
+  - link "Tarefa Arrastar Global":
+    - /url: /task/tarefa-arrastar-global
+  - link "TaskFlow Contextual Add Node Test":
+    - /url: /task/taskflow-contextual-add-node-test-1
+  - link "TaskFlow Delete Edge Test":
+    - /url: /task/taskflow-delete-edge-test
+  - link "TaskFlow Delete Node Test":
+    - /url: /task/taskflow-delete-node-test
+  - link "TaskFlow Add Outside Viewport Test":
+    - /url: /task/taskflow-add-outside-viewport-test-4
+  - link "Tarefa Adicionar Deletar":
+    - /url: /task/tarefa-adicionar-deletar
+  - link "Tarefa Teste E2E":
+    - /url: /task/tarefa-teste-e2e
+  - link "TaskFlow Add Inside Viewport (No Modal Test)":
+    - /url: /task/taskflow-add-inside-viewport-no-modal-test-1
+  - link "TaskFlow Drag Node Test":
+    - /url: /task/taskflow-drag-node-test
+  - link "TaskFlow Contextual Add Node Test":
+    - /url: /task/taskflow-contextual-add-node-test
+  - link "TaskFlow Add Inside Viewport (No Modal Test)":
+    - /url: /task/taskflow-add-inside-viewport-no-modal-test
+  - link "Tarefa Contextual Add":
+    - /url: /task/tarefa-contextual-add-1
+  - link "TaskFlow Add Outside Viewport Test":
+    - /url: /task/taskflow-add-outside-viewport-test-3
+  - link "TaskFlow Add Inside Viewport Test":
+    - /url: /task/taskflow-add-inside-viewport-test-2
+  - link "Tarefa Contextual Add":
+    - /url: /task/tarefa-contextual-add
+  - link "TaskFlow Add Outside Viewport Test":
+    - /url: /task/taskflow-add-outside-viewport-test-2
+  - link "TaskFlow Add Inside Viewport Test":
+    - /url: /task/taskflow-add-inside-viewport-test-1
+  - link "TaskFlow Add Outside Viewport Test":
+    - /url: /task/taskflow-add-outside-viewport-test-1
+  - link "TaskFlow Add Inside Viewport Test":
+    - /url: /task/taskflow-add-inside-viewport-test
+  - link "TaskFlow Add Outside Viewport Test":
+    - /url: /task/taskflow-add-outside-viewport-test
+  - link "teste":
+    - /url: /task/teste
+  - navigation:
+    - link "Base de conhecimento":
+      - /url: /knowledgebase
+      - paragraph: Base de conhecimento
+  - button "Sair":
+    - img
+    - paragraph: Sair
+- banner:
+  - heading "TaskFlow Add Outside Viewport Test" [level=1]
+- button "Problema Inicial Definir Problema Inicial +":
+  - img
+  - text: Problema Inicial
+  - button "Definir Problema Inicial"
+  - text: +
+- button "Editar Nó"
+- img
+- button:
+  - img
+- button:
+  - img
+- button:
+  - img
+- button:
+  - img
+- img
+- text: +
+```

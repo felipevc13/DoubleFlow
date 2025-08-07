@@ -1,0 +1,37 @@
+{
+  "problem": {
+    "displayName": "Problem",
+    "ui": {
+      "hasModal": true,
+      "diffFields": ["title", "description"]
+    },
+    "actions": {
+      "update": {
+        "tool": "updateNode",
+        "needsApproval": true,
+        "approvalStyle": "visual",
+        "executionMode": "backend",
+        "refinementPrompt": "problemRefine.md"
+      }
+    }
+  },
+  "datasource": {
+    "displayName": "DataSource",
+    "ui": {
+      "hasModal": true,
+      "diffFields": ["name", "type", "url"]
+    },
+    "actions": {
+      "create": {
+        "tool": "createNode",
+        "needsApproval": false,
+        "executionMode": "backend"
+      },
+      "delete": {
+        "tool": "deleteNode",
+        "needsApproval": false,
+        "executionMode": "backend"
+      }
+    }
+  }
+}
