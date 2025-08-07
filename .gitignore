@@ -12,3 +12,7 @@ extraction_service/.env*
 # VSCode/IDE
 .vscode/
 .DS_Store
+
+
+repomix-output.xml
+*.repomix.xml

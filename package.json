@@ -1,0 +1,13 @@
+{
+  "name": "doubleflow-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monorepo do DoubleFlow: Nuxt + FastAPI Extraction Service",
+  "scripts": {
+    "repomix": "npx repomix",
+    "dev:all": "concurrently \"npm --prefix nuxt-ai-mvp run dev\" \"cd extraction_service && source .venv/bin/activate && uvicorn app.main:app --reload\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
