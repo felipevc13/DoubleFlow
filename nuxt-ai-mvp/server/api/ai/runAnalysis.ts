@@ -64,10 +64,15 @@ function collectQuantitativeKpis(uploadedFiles: any[]): any[] {
  * - structured_data.qualitativeData (pergunta + respostas)
  * - content textual para categorias de texto (transcrição, txt, md)
  */
-function collectQualitativeText(uploadedFiles: any[]): string {
-  const texts: string[] = [];
+function collectQualitativeTextWithSections(uploadedFiles: any[]): {
+  joined: string;
+  sections: Array<{ name: string; text: string }>;
+} {
+  const sections: Array<{ name: string; text: string }> = [];
 
   for (const f of uploadedFiles) {
+    const texts: string[] = [];
+
     // a) inferred_survey_columns (quando veio do Excel)
     if (Array.isArray(f?.inferred_survey_columns)) {
       for (const col of f.inferred_survey_columns) {
@@ -107,9 +112,25 @@ function collectQualitativeText(uploadedFiles: any[]): string {
     if (isTextLike && typeof f?.content === "string" && f.content.trim()) {
       texts.push(f.content.trim());
     }
+
+    // Cria seção somente se houver conteúdo
+    if (texts.length) {
+      const basename = String(
+        f?.filename || f?.name || f?.path || f?.source_name || ""
+      )
+        .split(/[/\\]/)
+        .pop() as string;
+      const text = texts.join("\n---\n");
+      sections.push({ name: basename || "(desconhecido)", text });
+    }
   }
 
-  return texts.join("\n---\n");
+  // Monta o joined com marcadores explícitos por arquivo
+  const joined = sections
+    .map((s) => `=== SOURCE: ${s.name} ===\n${s.text}`)
+    .join("\n\n");
+
+  return { joined, sections };
 }
 
 /**
@@ -154,6 +175,20 @@ export async function runAnalysis(
   // 1) Junta todos os arquivos carregados nos nós anteriores
   const uploadedFiles = getAllUploadedFiles(nodeData);
 
+  const fileBasenames = Array.from(
+    new Set(
+      uploadedFiles
+        .map((f: any) =>
+          String(f?.filename || f?.name || f?.path || f?.source_name || "")
+            .split(/[/\\]/)
+            .pop()
+        )
+        .filter(Boolean)
+    )
+  ) as string[];
+
+  const quantitativeKpis = collectQuantitativeKpis(uploadedFiles);
+
   if (!uploadedFiles.length) {
     return {
       processInputError: "Nenhum arquivo encontrado para análise.",
@@ -163,8 +198,8 @@ export async function runAnalysis(
   }
 
   // 2) Extrai KPIs + textos
-  const quantitativeKpis = collectQuantitativeKpis(uploadedFiles);
-  const qualitativeData = collectQualitativeText(uploadedFiles);
+  const { joined: qualitativeData, sections: fileSections } =
+    collectQualitativeTextWithSections(uploadedFiles);
 
   // 3) Se não houver texto qualitativo, não chama LLM
   if (!qualitativeData || qualitativeData.trim() === "") {
@@ -172,6 +207,7 @@ export async function runAnalysis(
       quantitativeKpis,
       qualitativeInsights: [],
       actionableRecommendations: [],
+      insights: [], // compat: front espera analyzedData.insights
     };
     return {
       [config.output.saveTo]: combined,
@@ -184,7 +220,8 @@ export async function runAnalysis(
 
   // 4) Monta prompt e chama a IA
   const finalPrompt = await generateFinalPrompt(config.promptTemplate, {
-    qualitativeData,
+    // Dica ao modelo: inclua `filename` por insight usando os marcadores `=== SOURCE: <nome> ===` acima
+    qualitativeData: `Instrução: Ao gerar cada item em qualitativeInsights, inclua o campo \"filename\" com o nome após o marcador \"=== SOURCE: <nome> ===\" que corresponde ao trecho de onde o insight foi derivado.\n\n${qualitativeData}`,
     aggregatedData: qualitativeData, // compat com templates antigos
     outputSchema: config.output.schema,
   });
@@ -203,6 +240,7 @@ export async function runAnalysis(
       quantitativeKpis,
       qualitativeInsights: [],
       actionableRecommendations: [],
+      insights: [], // compat: front espera analyzedData.insights
     };
     return {
       [config.output.saveTo]: combined,
@@ -235,6 +273,7 @@ export async function runAnalysis(
       quantitativeKpis,
       qualitativeInsights: [],
       actionableRecommendations: [],
+      insights: [], // compat: front espera analyzedData.insights
     };
     return {
       [config.output.saveTo]: combined,
@@ -246,14 +285,47 @@ export async function runAnalysis(
   }
 
   // 6) Normaliza campos esperados
+  // Base arrays from model
+  const baseInsights: any[] = Array.isArray(parsed?.qualitativeInsights)
+    ? parsed.qualitativeInsights
+    : [];
+
+  // If only one source file is present and insights don't carry filename, attach it for filtering
+  const enrichedInsights = baseInsights.map((it: any) => {
+    if (it && (it.filename || it.file || it.source_name)) return it;
+
+    // 1) Se só existe um arquivo, atribui direto
+    if (fileBasenames.length === 1) {
+      return { ...it, filename: fileBasenames[0] };
+    }
+
+    // 2) Heurística: tenta localizar a citação/texto no bloco da seção correspondente
+    const needle =
+      (typeof it?.quote === "string" && it.quote) ||
+      (typeof it?.text === "string" && it.text) ||
+      (typeof it?.content === "string" && it.content) ||
+      "";
+
+    if (needle) {
+      const lower = needle.toLowerCase();
+      const found = fileSections.find((s) =>
+        s.text.toLowerCase().includes(lower)
+      );
+      if (found) {
+        return { ...it, filename: found.name };
+      }
+    }
+
+    return it;
+  });
+
   const combinedResult = {
     quantitativeKpis,
-    qualitativeInsights: Array.isArray(parsed?.qualitativeInsights)
-      ? parsed.qualitativeInsights
-      : [],
+    qualitativeInsights: enrichedInsights,
     actionableRecommendations: Array.isArray(parsed?.actionableRecommendations)
       ? parsed.actionableRecommendations
       : [],
+    insights: enrichedInsights, // compat: front espera analyzedData.insights
   };
 
   return {

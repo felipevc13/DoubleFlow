@@ -66,7 +66,7 @@
       </div>
     </template>
 
-    <div class="flex-1 p-6 bg-base-200 overflow-auto">
+    <div class="flex-1 px-6 p-6 overflow-auto">
       <div
         v-if="
           !analyzedData ||
@@ -81,17 +81,33 @@
         >
       </div>
       <div v-else>
-        <div
-          class="card bg-base-100 shadow rounded-lg border border-[#e5e7eb] dark:border-[#2a2a2a]"
-        >
-          <div class="card-body p-4 md:p-6">
-            <div v-if="activeTab === 'table'" class="h-full">
-              <AnalysisDataTable
-                :data="tableRows"
-                :columns="tableColumns"
-                :page-size="15"
-              />
+        <div class="card shadow rounded-lg">
+          <div class="pb-4">
+            <div class="flex flex-col items-start gap-2">
+              <label class="text-xs text-gray-400">Filtrar por arquivo</label>
+              <select
+                v-model="selectedFile"
+                :disabled="fileOptions.length === 0"
+                class="select select-sm w-56 bg-[#2C2B30] text-gray-200 border border-gray-600 focus:outline-none disabled:opacity-50"
+              >
+                <option value="all">Todos</option>
+                <option v-for="f in fileOptions" :key="f" :value="f">
+                  {{ f }}
+                </option>
+              </select>
+              <span
+                v-if="fileOptions.length === 0"
+                class="text-[11px] text-gray-500"
+                >Nenhum arquivo detectado nos dados.</span
+              >
             </div>
+          </div>
+          <div v-if="activeTab === 'table'" class="h-full">
+            <AnalysisDataTable
+              :data="tableRows"
+              :columns="tableColumns"
+              :page-size="15"
+            />
           </div>
         </div>
       </div>
@@ -170,8 +186,96 @@ function mapInsightToRow(x: any) {
   // User need / JTBD
   const userNeed =
     coalesce<string>(x?.user_need, x?.need, x?.jtbd, x?.jobToBeDone) || "—";
-  return { quote, topic, sentiment, user_need: userNeed };
+  return {
+    quote,
+    topic,
+    sentiment,
+    user_need: userNeed,
+    __file: extractFileLabel(x),
+  };
 }
+
+function extractFileLabel(x: any): string {
+  if (!x || typeof x !== "object") return "";
+
+  // Direct & flat fields
+  let raw = coalesce<string>(
+    x.file,
+    x.filename,
+    x.file_name,
+    x.source_name,
+    x.source,
+    x.document,
+    x.doc,
+    x.path,
+    x.name
+  );
+
+  // Nested common containers
+  if (!raw && x.meta)
+    raw = coalesce<string>(
+      x.meta.file,
+      x.meta.filename,
+      x.meta.name,
+      x.meta.path
+    );
+  if (!raw && x.metadata)
+    raw = coalesce<string>(
+      x.metadata.file,
+      x.metadata.filename,
+      x.metadata.name,
+      x.metadata.path
+    );
+  if (!raw && x.origin)
+    raw = coalesce<string>(
+      x.origin.file,
+      x.origin.filename,
+      x.origin.name,
+      x.origin.path
+    );
+  if (!raw && x.source)
+    raw = coalesce<string>(
+      x.source.file,
+      x.source.filename,
+      x.source.name,
+      x.source.path
+    );
+  if (!raw && x.context)
+    raw = coalesce<string>(
+      x.context.file,
+      x.context.filename,
+      x.context.name,
+      x.context.path
+    );
+  if (!raw && x.page)
+    raw = coalesce<string>(
+      x.page.file,
+      x.page.filename,
+      x.page.name,
+      x.page.path
+    );
+
+  if (!raw) return "";
+  const parts = String(raw).split(/[/\\]/);
+  return parts[parts.length - 1] || String(raw);
+}
+
+const selectedFile = ref<"all" | string>("all");
+const fileOptions = computed(() => {
+  const labels = new Set<string>();
+  for (const it of analyzedData.value.insights || []) {
+    const label = extractFileLabel(it);
+    if (label) labels.add(label);
+  }
+  const arr = Array.from(labels);
+  if (arr.length === 0 && (analyzedData.value.insights?.length || 0) > 0) {
+    console.log(
+      "[AnalysisModal] Nenhum nome de arquivo detectado nos insights. Exemplo de insight:",
+      analyzedData.value.insights[0]
+    );
+  }
+  return arr; // vazio => só mostra "Todos"
+});
 
 const props = defineProps({
   isOpen: { type: Boolean, required: true },
@@ -200,9 +304,11 @@ const taskFlowStore = useTaskFlowStore();
 const activeTab = ref<"table">("table");
 
 const analyzedData = computed(() => normalizeAnalyzedData(props.nodeData));
-const tableRows = computed(() =>
-  analyzedData.value.insights.map(mapInsightToRow)
-);
+const tableRows = computed(() => {
+  const rows = analyzedData.value.insights.map(mapInsightToRow);
+  if (selectedFile.value === "all") return rows;
+  return rows.filter((r) => r.__file === selectedFile.value);
+});
 
 watch(
   () => analyzedData.value.insights,

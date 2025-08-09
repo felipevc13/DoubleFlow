@@ -90,7 +90,13 @@ export default defineEventHandler(async (event) => {
       const fname = fr?.filename || "desconhecido";
       const insights = Array.isArray(fr?.insights) ? fr.insights : [];
       for (const it of insights) {
-        unifiedInsights.push({ ...it, _file: fname });
+        // Garante nome de arquivo "limpo" (apenas basename)
+        const cleanName = String(fname).split(/[/\\]/).pop() || String(fname);
+        unifiedInsights.push({
+          ...it,
+          filename: cleanName, // usado pelo filtro e exibição
+          _file: cleanName, // mantém compatibilidade com versões anteriores
+        });
       }
     }
 
