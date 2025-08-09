@@ -138,7 +138,7 @@
 <script setup>
 import { ref, computed, watch } from "vue";
 import BaseModal from "../../BaseModal.vue";
-import { v4 as uuidv4 } from "uuid"; // <-- Adicione esta linha
+import { v4 as uuidv4 } from "uuid";
 
 const props = defineProps({
   isOpen: { type: Boolean, required: true },
@@ -149,7 +149,7 @@ const emit = defineEmits(["close", "sources-prepared"]);
 const selectedCategory = ref("");
 const selectedFiles = ref([]);
 const fileInput = ref(null);
-const isLoading = ref(false); // <-- Adicione esta linha
+const isLoading = ref(false);
 
 const contentTypes = [
   {
@@ -185,20 +185,19 @@ const handleDrop = (event) => {
   selectedFiles.value = Array.from(event.dataTransfer.files);
 };
 
-// NOVA FUNÇÃO DE EXTRAÇÃO E PROCESSAMENTO DOS ARQUIVOS
 const handleAdd = async () => {
   if (!canAdd.value) return;
   isLoading.value = true;
 
   const fileProcessingPromises = selectedFiles.value.map(async (file) => {
     const ext = (file.name.split(".").pop() || "").toLowerCase();
+    // ⬇️ Removido structured_data/summary do shape inicial
     const sourceObject = {
       id: uuidv4(),
       name: file.name,
       type: ext,
       category: selectedCategory.value,
       content: "",
-      structured_data: null,
       createdAt: new Date().toISOString(),
     };
 
@@ -212,20 +211,29 @@ const handleAdd = async () => {
           method: "POST",
           body: formData,
         });
-        sourceObject.content = response.text || "";
-        sourceObject.structured_data = response.structured_data || null;
+
+        const structured = response.structured_data ?? {
+          quantitativeKPIs: response.quantitativeKPIs,
+          qualitativeData: response.qualitativeData,
+        };
+
+        // 🔑 Para planilhas: content = JSON estruturado (string)
+        sourceObject.content = JSON.stringify(structured);
+        // E **apenas aqui** adicionamos campos extras úteis na UI/análise:
+        sourceObject.summary = response.text || "";
+        sourceObject.structured_data = structured;
       } else if (ext === "docx") {
         sourceObject.type = "word";
         const response = await $fetch("/api/files/extract-text", {
           method: "POST",
           body: formData,
         });
+        // Para texto: só content
         sourceObject.content = response.text || "";
       } else if (ext === "txt" || ext === "md") {
         sourceObject.type = ext === "md" ? "markdown" : "text";
         sourceObject.content = await file.text();
       } else {
-        // Tipo de arquivo não suportado para extração, mas ainda adiciona o arquivo
         sourceObject.content = `(Arquivo '${file.name}' do tipo '${ext}' não suportado para extração de conteúdo.)`;
       }
     } catch (error) {

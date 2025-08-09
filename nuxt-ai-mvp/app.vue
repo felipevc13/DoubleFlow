@@ -95,7 +95,7 @@ watch(
 const modalProps = computed(() => {
   const activeType = modalStore.getActiveModalType;
   const modalDataValue = modalStore.getModalData;
-  
+
   // Default return for no active modal
   if (!activeType) return { isOpen: false };
 
@@ -115,18 +115,38 @@ const modalProps = computed(() => {
   // --- MANUAL EDIT MODE ---
   // Handle TaskForm and ConfirmDelete modals (simpler cases)
   if (activeType === "taskForm") {
-    return { 
-      isOpen: true, 
-      ...(modalDataValue || {}) 
+    return {
+      isOpen: true,
+      ...(modalDataValue || {}),
     };
   }
-  
+
   if (activeType === "confirmDelete") {
     return {
       isOpen: true,
       isLoading: modalDataValue?.isLoading ?? false,
       title: modalDataValue?.title,
       message: modalDataValue?.message,
+    };
+  }
+
+  // --- ANALYSIS MODAL (explicit handling) ---
+  if (activeType === "analysis") {
+    const nodeId = modalStore.getActiveNodeId || modalDataValue?.nodeId;
+
+    if (!nodeId) {
+      console.warn(
+        "[app.vue] analysis modal opened without nodeId. Falling back to modalData only."
+      );
+      return { isOpen: true, ...(modalDataValue || {}) };
+    }
+
+    const node = taskFlowStore.nodes.find((n) => n.id === nodeId);
+    return {
+      isOpen: true,
+      nodeId,
+      nodeData: node?.data,
+      ...(modalDataValue || {}),
     };
   }
 
@@ -138,8 +158,10 @@ const modalProps = computed(() => {
     );
     return { isOpen: true, nodeData: {} }; // Return empty but valid state
   }
-  
-  const reactiveNode = taskFlowStore.nodes.find(node => node.id === activeNodeId);
+
+  const reactiveNode = taskFlowStore.nodes.find(
+    (node) => node.id === activeNodeId
+  );
   if (!reactiveNode) {
     console.warn(
       `[app.vue] modalProps: Node with ID ${activeNodeId} not found in taskFlowStore.`
@@ -162,53 +184,58 @@ const agentLogic = useAgentLogic(); // Passe o taskId se for necessário
 const modalEventHandlers = computed(() => {
   const type = modalStore.getActiveModalType;
   const modalData = modalStore.getModalData;
-  
+
   // ConfirmDelete modal has a simple confirmation handler
   if (type === "confirmDelete") {
     return { confirm: handleModalConfirm };
   }
-  
+
   // For node-editing modals (Problem, DataSource, Survey, etc.)
   if (type && type !== "taskForm" && type !== "confirmDelete") {
     return {
       // Handle confirmation from the modal
       confirm: (payload) => {
-        console.log(`[App.vue] Received confirmation from ${type} modal:`, payload);
-        
+        console.log(
+          `[App.vue] Received confirmation from ${type} modal:`,
+          payload
+        );
+
         // Check if this is an agent action confirmation (diff mode)
         if (payload?.tool_name) {
           agentLogic.handleModalConfirmation(payload);
-        } 
+        }
         // Handle manual edit mode
         else {
           const nodeId = modalStore.getActiveNodeId;
           if (!nodeId) {
-            console.error('[App.vue] Cannot save: No active node ID in modalStore');
+            console.error(
+              "[App.vue] Cannot save: No active node ID in modalStore"
+            );
             return;
           }
           // Update the node data in the store
           taskFlowStore.updateNodeData(nodeId, payload);
         }
-        
+
         // Close the modal after handling the confirmation
         modalStore.closeModal();
       },
-      
+
       // Handle modal close event
       close: () => {
         modalStore.closeModal();
       },
-      
+
       // Handle update events (for multi-step modals or real-time updates)
       update: (updatedData) => {
         const nodeId = modalStore.getActiveNodeId;
         if (nodeId) {
           taskFlowStore.updateNodeData(nodeId, updatedData);
         }
-      }
+      },
     };
   }
-  
+
   // For other modals or if no specific handler is needed
   return {};
 });
@@ -217,8 +244,12 @@ const modalEventHandlers = computed(() => {
 const handleModalUpdate = (eventPayload) => {
   // Payload can be either direct data or an object with { nodeId, updatedData }
   let nodeId, updatedData;
-  
-  if (eventPayload && typeof eventPayload === 'object' && 'nodeId' in eventPayload) {
+
+  if (
+    eventPayload &&
+    typeof eventPayload === "object" &&
+    "nodeId" in eventPayload
+  ) {
     // Payload is in the format { nodeId, updatedData }
     ({ nodeId, updatedData } = eventPayload);
   } else {

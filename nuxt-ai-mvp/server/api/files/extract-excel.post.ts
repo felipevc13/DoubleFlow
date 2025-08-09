@@ -1,24 +1,15 @@
-import * as XLSX from "xlsx"; // Import xlsx library
+// server/api/files/extract-excel.post.ts
+import * as dfd from "danfojs-node";
+import { defineEventHandler, readMultipartFormData, createError } from "h3";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
-function normalizeType(str: string): string {
-  const typeStr = String(str || "openText")
-    .toLowerCase()
-    .replace(/[\s-]/g, "");
-  if (typeStr === "multiplechoice") return "multipleChoice";
-  if (typeStr === "opentext") return "openText";
-  if (typeStr === "opinionscale") return "opinionScale";
-  if (typeStr === "rating" || typeStr === "satisfactionscale") return "rating";
-  return "openText";
+function normalizeType(str: string | number | boolean): string {
+  if (typeof str !== "string") return "";
+  return str.trim().toLowerCase();
 }
 
-// Remove espaços extras, null e undefined; normaliza valores
-function cleanCellValue(value: any): string {
-  if (value === null || value === undefined) return "";
-  return String(value).trim();
-}
-
-// CORREÇÃO APLICADA AQUI
-// Se quiser ignorar colunas do sistema, defina por aqui (exemplo)
 function isMetadataColumn(header: string): boolean {
   const meta = [
     "id",
@@ -27,132 +18,228 @@ function isMetadataColumn(header: string): boolean {
     "participante",
     "respondente",
     "e-mail",
+    "email",
   ];
   if (!header) return true;
   const lowerHeader = header.toLowerCase().trim();
-  // Altera de .includes() para uma comparação exata (===)
   return meta.some((m) => lowerHeader === m);
 }
 
-// Se quiser agrupar colunas de múltipla escolha ou retornar direto
-function groupMultiChoiceColumns(cols: any[]): any[] {
-  // Para este pipeline, só retorna o array, mas pode customizar depois
-  return cols;
+function cleanCellValue(value: any): string {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
+
+function sanitizeToken(v: any): string {
+  const s = String(v ?? "").trim();
+  if (!s) return "";
+  const low = s.toLowerCase();
+  if (low === "undefined" || low === "nan" || low === "null") return "";
+  return s;
 }
 
 export default defineEventHandler(async (event) => {
   try {
     const formData = await readMultipartFormData(event);
-    const fileData = formData?.find((item) => item.name === "file"); // Key must match FormData append in frontend
+    const fileData = formData?.find((item) => item.name === "file");
 
-    if (!fileData || !fileData.data || !fileData.filename) {
+    if (!fileData || !fileData.data) {
       throw createError({
         statusCode: 400,
-        statusMessage: "Nenhum arquivo enviado ou dados inválidos.",
+        statusMessage: "Nenhum arquivo enviado.",
       });
     }
 
-    const lowerFilename = fileData.filename.toLowerCase();
-    if (!lowerFilename.endsWith(".xlsx") && !lowerFilename.endsWith(".xls")) {
-      throw createError({
-        statusCode: 400,
-        statusMessage:
-          "Tipo de arquivo inválido. Apenas .xlsx e .xls são suportados.",
-      });
-    }
+    const buffer = fileData.data as Buffer;
 
-    // Novo pipeline robusto para processar as sheets
-    const workbook = XLSX.read(fileData.data, {
-      type: "buffer",
-      cellDates: true,
+    // Salva arquivo temporário
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "excel-"));
+    const tmpPath = path.join(tmpDir, "upload.xlsx");
+    await writeFile(tmpPath, buffer);
+
+    // Lê primeira planilha
+    const df = (await (dfd as any).readExcel(tmpPath, {
+      sheet: 0,
+    })) as dfd.DataFrame;
+
+    console.log("df shape", df.shape);
+    (df as any).head(5).print();
+
+    const typesRaw = df.columns as (string | number | boolean)[];
+    const headersRaw = df.iloc({ rows: [0] }).values[0] as (
+      | string
+      | number
+      | boolean
+    )[];
+
+    const types = typesRaw.map(normalizeType);
+    const headers = headersRaw.map((h) => String(h));
+
+    console.log("Tipos detectados:", types);
+    console.log("Perguntas detectadas (headers):", headers);
+
+    // Dados reais a partir da linha 1
+    const dataDf = df.iloc({ rows: ["1:"] }) as dfd.DataFrame;
+    const renamedDataDf = new dfd.DataFrame(dataDf.values, {
+      columns: headers,
     });
-    const sheets = workbook.SheetNames.map((sheetName) => {
-      const worksheet = workbook.Sheets[sheetName];
-      const data = XLSX.utils.sheet_to_json<any[]>(worksheet, {
-        header: 1,
-        defval: null,
-      });
 
-      // Novo parsing: espera-se linha 0 = tipo, linha 1 = pergunta, linha 2+ = respostas
-      if (data.length < 2) return { sheetName, columns: [] };
+    const quantitativeKPIs: any[] = [];
+    const qualitativeData: any[] = [];
+    const summaryLines: string[] = [];
 
-      const typeRowRaw = data[0].map((t) => String(t || "").toLowerCase());
-      const typeRow = typeRowRaw.map(normalizeType);
-      const headerRow = data[1].map((h) => String(h || ""));
+    for (let i = 0; i < headers.length; i++) {
+      const header = headers[i];
+      if (Array.isArray(header)) continue;
+      const type = types[i] || "";
+      if (!header || isMetadataColumn(header)) continue;
 
-      // Filtrar colunas sem header definido (linha 2)
-      const validColIndices = headerRow
-        .map((h, idx) => (h.trim() !== "" ? idx : -1))
-        .filter((idx) => idx !== -1);
+      const series = renamedDataDf.column(header).dropNa();
+      const n = series.count();
+      if (n === 0) continue;
 
-      // Filtrar linhas completamente vazias (após a segunda linha)
-      const dataRows = data
-        .slice(2)
-        .filter((row) =>
-          validColIndices.some(
-            (colIdx) => row[colIdx] !== null && row[colIdx] !== undefined
-          )
+      summaryLines.push(`${header} — tipo: ${type || "desconhecido"} — N=${n}`);
+
+      // --- Qualitativo: qualquer opentext (com ou sem sufixo) ---
+      if (type.startsWith("opentext")) {
+        qualitativeData.push({
+          pergunta: header,
+          respostas: series.values
+            .map(cleanCellValue)
+            .filter((s: string) => !!s),
+          type,
+          n,
+          order: i,
+        });
+        continue; // NÃO entra em quantitativeKPIs
+      }
+
+      // --- Quantitativo ---
+      let distribution: Record<string, number> = {};
+
+      if (type.startsWith("multiplechoice")) {
+        // Divide por vírgula ou ponto e vírgula; limpa tokens
+        const exploded = series.values.flatMap((v: any) =>
+          String(v).split(/[,;]+/).map(sanitizeToken).filter(Boolean)
         );
+        const vc = new dfd.Series(exploded).valueCounts() as any;
+        if (Array.isArray(vc?.index) && Array.isArray(vc?.values)) {
+          for (let j = 0; j < vc.index.length; j++) {
+            const key = sanitizeToken(vc.index[j]);
+            const count = Number(vc.values[j] ?? 0);
+            if (key && count > 0) distribution[key] = count;
+          }
+        }
+      } else {
+        const vc = series.valueCounts() as any;
 
-      const initialColumns = validColIndices.map((colIdx) => ({
-        header: headerRow[colIdx],
-        type: typeRow[colIdx] || "openText",
-        responses: dataRows.map((row) => cleanCellValue(row[colIdx])),
-      }));
+        if (Array.isArray(vc?.columns) && Array.isArray(vc?.values)) {
+          // DataFrame: vc.values => [[key, count], ...]
+          const keyIdx = 0;
+          const countIdx = vc.columns.length > 1 ? 1 : 0;
+          for (const row of vc.values as any[][]) {
+            const key = sanitizeToken(row[keyIdx]);
+            const count = Number(row[countIdx] ?? 0);
+            if (key && count > 0) distribution[key] = count;
+          }
+        } else if (Array.isArray(vc?.index) && Array.isArray(vc?.values)) {
+          // Series: index/values
+          const keys: any[] = vc.index;
+          const counts: any[] = vc.values;
+          for (let j = 0; j < keys.length; j++) {
+            const key = sanitizeToken(keys[j]);
+            const count = Number(counts[j] ?? 0);
+            if (key && count > 0) distribution[key] = count;
+          }
+        }
+      }
 
-      const analysisColumns = initialColumns.filter(
-        (col) => !isMetadataColumn(col.header)
-      );
-      const finalColumns = groupMultiChoiceColumns(analysisColumns);
-
-      return { sheetName, columns: finalColumns };
-    });
-
-    // Check if sheets is empty or all sheets have empty columns
-    const allSheetsEmpty =
-      sheets.length === 0 ||
-      sheets.every((sheet) => !sheet.columns || sheet.columns.length === 0);
-
-    if (allSheetsEmpty) {
-      console.error(
-        "Nenhuma coluna válida encontrada em nenhuma aba da planilha."
-      );
-      return {
-        structured_data: null,
-        text: "",
-        error: "Nenhuma coluna válida encontrada em nenhuma aba da planilha.",
+      const kpi: any = {
+        metric: header,
+        details: `N=${n} respostas`,
+        distribution,
+        type,
+        n,
+        order: i,
       };
+
+      // Escala numérica com média + distribuição
+      if (type.startsWith("rating") || type.startsWith("opinionscale")) {
+        const numericSeries = (series as unknown as dfd.Series)
+          .asType("float32")
+          .dropNa();
+        if (numericSeries.count() > 0) {
+          kpi.value = Number(numericSeries.mean()).toFixed(1);
+
+          const vcNum = (numericSeries as any).valueCounts();
+          const dist: Record<string, number> = {};
+          if (Array.isArray(vcNum?.index) && Array.isArray(vcNum?.values)) {
+            for (let j = 0; j < vcNum.index.length; j++) {
+              const key = sanitizeToken(vcNum.index[j]);
+              const count = Number(vcNum.values[j] ?? 0);
+              if (key && count > 0) dist[key] = count;
+            }
+          }
+          kpi.distribution = dist;
+        }
+      } else if (type.startsWith("multiplechoice")) {
+        if (Object.keys(distribution).length > 0) {
+          kpi.value = Object.entries(distribution).sort(
+            (a, b) => b[1] - a[1]
+          )[0][0];
+        } else {
+          kpi.value = "";
+        }
+      }
+
+      quantitativeKPIs.push(kpi);
     }
 
-    // Generate aggregated text from all sheets, columns and responses
-    let aggregatedText = "";
-    sheets.forEach((sheet) => {
-      sheet.columns.forEach((col) => {
-        aggregatedText += col.header + ": ";
-        if (Array.isArray(col.responses)) {
-          aggregatedText += col.responses
-            .filter(
-              (r: string | number | boolean | null | undefined) =>
-                r !== null && r !== undefined && r !== ""
-            )
-            .join(", ");
-        }
-        aggregatedText += "\n";
-      });
-    });
+    const text = [
+      "Pesquisa importada via Excel.",
+      "Perguntas e amostras detectadas:",
+      ...summaryLines,
+    ].join("\n");
 
-    return { structured_data: { sheets }, text: aggregatedText.trim() };
+    const formatted =
+      `# Pesquisa importada via Excel\n\n` +
+      `## Quantitativo\n` +
+      quantitativeKPIs
+        .map(
+          (kpi) =>
+            `**${kpi.metric}** (N=${kpi.n}, tipo: ${kpi.type})\n` +
+            (kpi.value ? `Valor: ${kpi.value}\n` : ``) +
+            (Object.keys(kpi.distribution || {}).length > 0
+              ? "Distribuição:\n" +
+                Object.entries(kpi.distribution)
+                  .map(([opt, cnt]) => `- ${opt}: ${cnt}`)
+                  .join("\n")
+              : ``)
+        )
+        .join("\n\n") +
+      `\n\n## Qualitativo\n` +
+      qualitativeData
+        .map(
+          (q) =>
+            `**${q.pergunta}** (N=${q.n})\n` +
+            q.respostas.map((r: string) => `- ${r}`).join("\n")
+        )
+        .join("\n\n");
+
+    rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+
+    return {
+      text,
+      formatted,
+      structured_data: { quantitativeKPIs, qualitativeData },
+      quantitativeKPIs,
+      qualitativeData,
+    };
   } catch (error: any) {
     console.error("Erro ao processar arquivo Excel:", error);
-    if (error.statusCode) {
-      throw error; // Re-throw H3 errors
-    }
-
     throw createError({
       statusCode: 500,
-      statusMessage: `Erro ao processar arquivo Excel: ${
-        error.message || "Erro desconhecido"
-      }`,
+      statusMessage: `Erro ao processar arquivo Excel: ${error.message}`,
     });
   }
 });

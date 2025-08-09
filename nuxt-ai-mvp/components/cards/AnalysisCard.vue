@@ -85,11 +85,9 @@ const hasContent = computed(() => {
 });
 
 const openAnalysisModal = () => {
-  // Using 'problem' modal type as a temporary solution
-  modalStore.openModal("problem" as any, {
-    type: "analysis",
-    data: props.data,
+  modalStore.openModal(ModalType.analysis, {
     nodeId: props.id,
+    data: props.data, // se o AnalysisModal lê daqui
   });
 };
 </script>

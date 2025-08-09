@@ -2,7 +2,10 @@
   <div class="overflow-x-auto bg-[#2C2B30] rounded-lg border border-[#393939]">
     <table class="table table-zebra w-full">
       <thead>
-        <tr v-for="headerGroup in table.getHeaderGroups()" :key="headerGroup.id">
+        <tr
+          v-for="headerGroup in table.getHeaderGroups()"
+          :key="headerGroup.id"
+        >
           <th
             v-for="header in headerGroup.headers"
             :key="header.id"
@@ -29,19 +32,44 @@
       </tbody>
     </table>
     <div class="flex items-center justify-end gap-2 p-4">
-      <button class="btn btn-sm" @click="table.setPageIndex(0)" :disabled="!table.getCanPreviousPage()">«</button>
-      <button class="btn btn-sm" @click="table.previousPage()" :disabled="!table.getCanPreviousPage()">‹</button>
+      <button
+        class="btn btn-sm"
+        @click="table.setPageIndex(0)"
+        :disabled="!table.getCanPreviousPage()"
+      >
+        «
+      </button>
+      <button
+        class="btn btn-sm"
+        @click="table.previousPage()"
+        :disabled="!table.getCanPreviousPage()"
+      >
+        ‹
+      </button>
       <span class="text-sm">
-        Página {{ table.getState().pagination.pageIndex + 1 }} de {{ table.getPageCount() }}
+        Página {{ table.getState().pagination.pageIndex + 1 }} de
+        {{ table.getPageCount() }}
       </span>
-      <button class="btn btn-sm" @click="table.nextPage()" :disabled="!table.getCanNextPage()">›</button>
-      <button class="btn btn-sm" @click="table.setPageIndex(table.getPageCount() - 1)" :disabled="!table.getCanNextPage()">»</button>
+      <button
+        class="btn btn-sm"
+        @click="table.nextPage()"
+        :disabled="!table.getCanNextPage()"
+      >
+        ›
+      </button>
+      <button
+        class="btn btn-sm"
+        @click="table.setPageIndex(table.getPageCount() - 1)"
+        :disabled="!table.getCanNextPage()"
+      >
+        »
+      </button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref } from "vue";
 import {
   useVueTable,
   getCoreRowModel,
@@ -50,7 +78,7 @@ import {
   FlexRender,
   type SortingState,
   type ColumnDef,
-} from '@tanstack/vue-table';
+} from "@tanstack/vue-table";
 
 const props = defineProps<{
   data: any[];
@@ -61,13 +89,20 @@ const props = defineProps<{
 const sorting = ref<SortingState>([]);
 
 const table = useVueTable({
-  get data() { return props.data },
-  get columns() { return props.columns },
+  get data() {
+    return props.data;
+  },
+  get columns() {
+    return props.columns;
+  },
   state: {
-    get sorting() { return sorting.value },
+    get sorting() {
+      return sorting.value;
+    },
   },
   onSortingChange: (updater: any) => {
-    sorting.value = typeof updater === 'function' ? updater(sorting.value) : updater;
+    sorting.value =
+      typeof updater === "function" ? updater(sorting.value) : updater;
   },
   getCoreRowModel: getCoreRowModel(),
   getSortedRowModel: getSortedRowModel(),

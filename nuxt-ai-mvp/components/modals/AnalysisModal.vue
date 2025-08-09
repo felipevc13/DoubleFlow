@@ -1,69 +1,98 @@
 <template>
-  <BaseModal 
-    :is-open="isOpen" 
-    size="viewport-fill" 
-    @close="$emit('close')" 
-    hide-default-header 
+  <BaseModal
+    :is-open="isOpen"
+    size="viewport-fill"
+    @close="closeModal"
+    hide-default-header
     hide-default-footer
+    :is-loading="isModalLoading"
+    content-wrapper-class="flex flex-col h-full"
   >
     <template #header>
-      <div class="flex items-center justify-between px-6 py-4 border-b border-[#393939]">
-        <div class="flex items-center gap-4">
-          <AiIcon class="w-7 h-7" />
-          <h2 class="text-xl font-semibold text-white">Hub de Análise de IA</h2>
-        </div>
-        <div class="flex items-center gap-4">
-          <div class="tabs tabs-boxed bg-transparent">
-            <a 
-              class="tab" 
-              :class="{'tab-active': activeTab === 'table'}" 
+      <div class="flex items-center justify-between px-6 py-4">
+        <!-- Grupo Esquerda: Título + Abas (igual Survey) -->
+        <div class="flex items-center gap-10">
+          <!-- Título Fixo -->
+          <div class="flex items-center gap-2">
+            <AiIcon class="w-5 h-5" />
+            <span class="text-base font-semibold text-white">Análise</span>
+          </div>
+          <!-- Abas (Tabs) -->
+          <div class="flex items-center rounded">
+            <button
               @click="activeTab = 'table'"
+              :class="{
+                'text-[#E7E9EA] font-bold': activeTab === 'table',
+                'text-[#71767B] hover:text-[#E7E9EA]': activeTab !== 'table',
+              }"
+              class="relative px-4 py-2 text-sm bg-transparent focus:outline-none"
             >
               Análise Detalhada
-            </a>
-            <a 
-              class="tab" 
-              :class="{'tab-active': activeTab === 'affinity'}" 
-              @click="activeTab = 'affinity'"
-            >
-              Mapa de Afinidade
-            </a>
-            <a 
-              class="tab" 
-              :class="{'tab-active': activeTab === 'empathy'}" 
-              @click="activeTab = 'empathy'"
-            >
-              Mapa de Empatia
-            </a>
+              <span
+                v-if="activeTab === 'table'"
+                class="absolute bottom-[-1px] left-0 right-0 h-[2px] bg-[#4D6BFE] rounded-full"
+              ></span>
+            </button>
           </div>
-          <button class="btn btn-primary" @click="generateReport">
+        </div>
+        <!-- Direita: Ação + Fechar (estilo Survey) -->
+        <div class="flex items-center gap-8">
+          <button
+            @click="generateReport"
+            class="px-3 py-1 border border-white rounded-md text-white text-sm font-medium hover:bg-white/10 transition-colors"
+          >
             Gerar Relatório
           </button>
-          <button @click="$emit('close')" class="btn btn-ghost btn-circle">
-            ✕
+          <button
+            @click="closeModal"
+            class="text-[#F8FAFC] hover:text-gray-400"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-6 w-6"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
           </button>
         </div>
       </div>
     </template>
 
-    <div class="flex-1 p-6 bg-[#171717] overflow-auto">
-      <div v-if="!analyzedData || !analyzedData.insights || analyzedData.insights.length === 0" 
-           class="text-center text-gray-400">
+    <div class="flex-1 p-6 bg-base-200 overflow-auto">
+      <div
+        v-if="
+          !analyzedData ||
+          !analyzedData.insights ||
+          analyzedData.insights.length === 0
+        "
+        class="text-center text-gray-400"
+      >
         Nenhuma análise encontrada ou dados insuficientes.
+        <span class="block text-xs opacity-60 mt-1"
+          >(AnalysisModal: empty-state reached)</span
+        >
       </div>
       <div v-else>
-        <div v-if="activeTab === 'table'" class="h-full">
-          <AnalysisDataTable 
-            :data="analyzedData.insights" 
-            :columns="tableColumns" 
-            :page-size="15"
-          />
-        </div>
-        <div v-if="activeTab === 'affinity'" class="h-full">
-          <PostItBoard :clusters="affinityMapForBoard" layout="grid" />
-        </div>
-        <div v-if="activeTab === 'empathy'" class="h-full">
-          <PostItBoard :clusters="empathyMapForBoard" layout="quadrant" />
+        <div
+          class="card bg-base-100 shadow rounded-lg border border-[#e5e7eb] dark:border-[#2a2a2a]"
+        >
+          <div class="card-body p-4 md:p-6">
+            <div v-if="activeTab === 'table'" class="h-full">
+              <AnalysisDataTable
+                :data="tableRows"
+                :columns="tableColumns"
+                :page-size="15"
+              />
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -71,106 +100,170 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, h } from 'vue';
-import { createColumnHelper } from '@tanstack/vue-table';
-import { useTaskFlowStore } from '~/stores/taskFlow';
-import BaseModal from './BaseModal.vue';
-import AiIcon from '../icon/AiIcon.vue';
-import AnalysisDataTable from '../common/AnalysisDataTable.vue';
-import PostItBoard from '../cards/content/PostItBoard.vue';
+import { ref, computed, h, watch } from "vue";
+import { createColumnHelper } from "@tanstack/vue-table";
+import { useTaskFlowStore } from "~/stores/taskFlow";
+import BaseModal from "./BaseModal.vue";
+import AiIcon from "../icon/AiIcon.vue";
+import AnalysisDataTable from "../common/AnalysisDataTable.vue";
 
-type TabType = 'table' | 'affinity' | 'empathy';
+// --- Normalizers to tolerate multiple backend shapes ---
+function coalesce<T>(...vals: (T | undefined | null)[]): T | undefined {
+  for (const v of vals) if (v !== undefined && v !== null) return v as T;
+}
 
-const props = defineProps<{
-  isOpen: boolean;
-  nodeData: any;
-  nodeId: string;
-}>();
+function normalizeAnalyzedData(nodeData: any): { insights: any[] } {
+  if (!nodeData) return { insights: [] };
+  const d = nodeData;
+  const raw =
+    coalesce<any[]>(
+      // Direct arrays
+      Array.isArray(d) ? d : undefined,
 
-const emit = defineEmits(['close']);
+      // Flat
+      d?.insights,
+
+      // Common top-level objects
+      d?.analyzedData?.insights,
+      d?.analyzed?.insights,
+      d?.analysisResults?.insights,
+      d?.analysis?.results?.insights,
+      d?.analysis?.insights,
+
+      // Nested under data
+      d?.data?.insights,
+      d?.data?.analyzedData?.insights,
+      d?.data?.analysis?.insights,
+      d?.data?.analysis?.results?.insights,
+
+      // Output-style
+      d?.outputData?.insights,
+      d?.outputData?.analysis?.insights,
+      d?.outputData?.analysis?.results?.insights,
+      d?.output?.insights,
+      d?.output?.analysis?.insights,
+
+      // Result-style
+      d?.result?.insights,
+      d?.results?.insights,
+
+      // Generic items arrays sometimes used
+      d?.items,
+      d?.data?.items,
+      d?.outputData?.items
+    ) || [];
+
+  return { insights: Array.isArray(raw) ? raw : [] };
+}
+
+function mapInsightToRow(x: any) {
+  // Quote / content
+  const quote =
+    coalesce<string>(x?.quote, x?.text, x?.content, x?.message, x?.raw) || "";
+  // Topic / cluster
+  const topic =
+    coalesce<string>(x?.topic, x?.cluster, x?.tag, x?.category, x?.label) ||
+    "—";
+  // Sentiment
+  const sentiment =
+    coalesce<string>(x?.sentiment, x?.polarity, x?.feeling) || "—";
+  // User need / JTBD
+  const userNeed =
+    coalesce<string>(x?.user_need, x?.need, x?.jtbd, x?.jobToBeDone) || "—";
+  return { quote, topic, sentiment, user_need: userNeed };
+}
+
+const props = defineProps({
+  isOpen: { type: Boolean, required: true },
+  nodeData: {
+    type: Object,
+    default: () => ({ analyzedData: { insights: [] } }),
+  },
+  nodeId: { type: String, required: true },
+});
+
+import { useModalStore, ModalType } from "~/stores/modal";
+const modalStore = useModalStore();
+const openAnalysisModal = () => {
+  modalStore.openModal(
+    ModalType.analysis,
+    { nodeId: props.nodeId },
+    props.nodeId
+  );
+};
+
+const emit = defineEmits(["close"]);
+const isModalLoading = ref(false);
+const closeModal = () => emit("close");
+
 const taskFlowStore = useTaskFlowStore();
-const activeTab = ref<TabType>('table');
+const activeTab = ref<"table">("table");
 
-const analyzedData = computed(() => props.nodeData?.analyzedData || { insights: [] });
+const analyzedData = computed(() => normalizeAnalyzedData(props.nodeData));
+const tableRows = computed(() =>
+  analyzedData.value.insights.map(mapInsightToRow)
+);
 
-const affinityMapForBoard = computed(() => {
-  const insights = analyzedData.value?.insights || [];
-  const groups = insights.reduce((acc: Record<string, string[]>, item: any) => {
-    const topic = item.topic || 'Geral';
-    if (!acc[topic]) acc[topic] = [];
-    acc[topic].push(item.quote);
-    return acc;
-  }, {});
-  
-  return Object.entries(groups).map(([title, items]) => ({ 
-    title, 
-    items: items as string[] 
-  }));
-});
+watch(
+  () => analyzedData.value.insights,
+  (val) => {
+    if (!val || val.length === 0) {
+      console.log(
+        "[AnalysisModal] Insights vazios. nodeData keys:",
+        Object.keys(props.nodeData || {})
+      );
+      console.log("[AnalysisModal] Exemplo de nodeData:", props.nodeData);
+    }
+  },
+  { immediate: true }
+);
 
-const empathyMapForBoard = computed(() => {
-  const insights = analyzedData.value?.insights || [];
-  const says = insights.map((d: any) => d.quote);
-  const feels = insights
-    .filter((d: any) => d.sentiment)
-    .map((d: any) => `${d.sentiment}: ${d.quote}`);
-  const thinks = insights
-    .filter((d: any) => d.user_need)
-    .map((d: any) => d.user_need);
-    
-  return [
-    { title: "Diz", items: says },
-    { title: "Pensa", items: thinks },
-    { title: "Faz", items: [] },
-    { title: "Sente", items: feels },
-  ];
-});
+watch(
+  () => props.isOpen,
+  (open) => {
+    if (open) {
+      console.log("[AnalysisModal] Opened for node:", props.nodeId);
+      console.log("[AnalysisModal] nodeData on open:", props.nodeData);
+    }
+  },
+  { immediate: true }
+);
+
+watch(
+  () => props.nodeData,
+  (val) => {
+    console.log(
+      "[AnalysisModal] nodeData changed. keys:",
+      Object.keys(val || {})
+    );
+  },
+  { deep: true }
+);
 
 const columnHelper = createColumnHelper<any>();
 const tableColumns = [
-  columnHelper.accessor('quote', {
-    header: 'Citação / Feedback',
-    cell: (info: any) => h('span', { innerHTML: info.getValue() })
+  columnHelper.accessor("quote", {
+    header: "Citação / Feedback",
+    cell: (info: any) => h("span", { innerHTML: info.getValue() }),
   }),
-  columnHelper.accessor('topic', { 
-    header: 'Tópico',
-    cell: (info: any) => info.getValue() || '—'
+  columnHelper.accessor("topic", {
+    header: "Tópico",
+    cell: (info: any) => info.getValue() || "—",
   }),
-  columnHelper.accessor('sentiment', { 
-    header: 'Sentimento',
-    cell: (info: any) => info.getValue() || '—'
+  columnHelper.accessor("sentiment", {
+    header: "Sentimento",
+    cell: (info: any) => info.getValue() || "—",
   }),
-  columnHelper.accessor('user_need', { 
-    header: 'Necessidade do Usuário',
-    cell: (info: any) => info.getValue() || '—'
+  columnHelper.accessor("user_need", {
+    header: "Necessidade do Usuário",
+    cell: (info: any) => info.getValue() || "—",
   }),
 ];
 
 const generateReport = () => {
   taskFlowStore.requestNodeReprocessing(props.nodeId);
-  emit('close');
+  emit("close");
 };
 </script>
 
-<style scoped>
-.tab {
-  color: #9ca3af;
-  transition: color 0.2s ease-in-out;
-}
-
-.tab:hover {
-  color: #ffffff;
-}
-
-.tab-active {
-  color: #ffffff;
-  background-color: #3a3940;
-  border-radius: 0.5rem;
-}
-
-.tabs-boxed {
-  padding: 0.25rem;
-  border-radius: 0.5rem;
-  background-color: rgba(255, 255, 255, 0.05);
-}
-</style>
+<style scoped></style>

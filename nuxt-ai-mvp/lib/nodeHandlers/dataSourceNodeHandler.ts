@@ -147,7 +147,6 @@ export const dataSourceNodeHandler: INodeHandler = {
 
     return {
       uploaded_files: outputFiles,
-      survey_kpis: allKpis,
     };
   },
 

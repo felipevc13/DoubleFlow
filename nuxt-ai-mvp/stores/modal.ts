@@ -11,6 +11,7 @@ export const ModalType = {
   survey: "survey",
   confirmDelete: "confirmDelete",
   problem: "problem",
+  analysis: "analysis",
 } as const;
 
 export type ModalType = (typeof ModalType)[keyof typeof ModalType];

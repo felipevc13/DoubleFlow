@@ -1,193 +1,287 @@
-# extraction_service/app/main.py
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
-import langextract as lx
-import textwrap
-import os
+# app/main.py
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime
 import json
-import re
-from json_repair import repair_json
-from langextract.data import ExampleData, Extraction # Importação 
+import os
+import textwrap
+from pathlib import Path
 
-app = FastAPI(title="LangExtract Analysis Service")
+# -----------------------------------------------------------------------------
+# Carrega .env de forma robusta (local -> raiz do monorepo)
+# -----------------------------------------------------------------------------
+try:
+    from dotenv import load_dotenv
+    env_local = Path(__file__).resolve().parent / ".env"
+    if env_local.exists():
+        load_dotenv(env_local)  # extraction_service/.env
+    else:
+        env_root = Path(__file__).resolve().parents[1] / ".env"
+        if env_root.exists():
+            load_dotenv(env_root)  # ../.env
+except Exception:
+    # segue sem dotenv se não estiver instalado
+    pass
+
+# -----------------------------------------------------------------------------
+# Gemini (novo SDK) - pip install google-genai
+# -----------------------------------------------------------------------------
+from google import genai
+
+app = FastAPI(title="Analysis Service (Gemini Structured Output)")
+
+# -----------------------------------------------------------------------------
+# Models (request/response)
+# -----------------------------------------------------------------------------
+class FileDataItem(BaseModel):
+    filename: str
+    content: str   # texto puro ou JSON string (para planilha)
+    category: str  # "pesquisa_usuario" | "transcricao_entrevista" | etc.
 
 class FileAnalysisRequest(BaseModel):
-    files: List[Dict[str, str]]  # Cada item: {"nome_arquivo.txt": "conteúdo..."}
-    kpi_data: Optional[List[Dict[str, Any]]] = None
+    files: List[FileDataItem]
+
+class Insight(BaseModel):
+    quote: str = Field(..., description="Citação representativa")
+    topic: str = Field(..., description="Categoria do insight (ex: Usabilidade)")
+    sentiment: str = Field(..., description="positivo | negativo | neutro")
+    user_need: str = Field(..., description="Necessidade do usuário")
+    evidence: str = Field(..., description="Base qualitativa/quantitativa")
 
 class AnalysisResult(BaseModel):
     filename: str
-    insights: List[Dict[str, Any]]
+    insights: List[Insight]
 
-prompt_description = textwrap.dedent("""\
-    Você é um analista de dados especialista em UX Research. Sua tarefa é sintetizar dados qualitativos (feedback de texto) e quantitativos (KPIs e distribuições) de uma pesquisa para gerar insights acionáveis.
-    
-    Analise ambos os conjuntos de dados para encontrar correlações, validar hipóteses e identificar as dores mais impactantes.
+# -----------------------------------------------------------------------------
+# Config & helpers
+# -----------------------------------------------------------------------------
+def get_gemini_client() -> genai.Client:
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GOOGLE_API_KEY/GEMINI_API_KEY não configurada.")
+    return genai.Client(api_key=api_key)
 
-    Para cada insight gerado, preencha os seguintes campos:
-    - 'quote': Uma citação qualitativa representativa que suporta o insight.
-    - 'topic': A categoria principal (ex: Usabilidade, Performance, Preço).
-    - 'sentiment': O sentimento expresso (positivo, negativo, neutro).
-    - 'user_need': A necessidade do usuário por trás do feedback.
-    - 'evidence': A justificativa para este insight, citando se ele é baseado em dados qualitativos, quantitativos, ou ambos. Se for quantitativo, mencione o KPI.
+# JSON Schema puro para evitar colisões com typing.Type (Python 3.13)
+INSIGHT_SCHEMA: Dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "quote": {"type": "string"},
+            "topic": {"type": "string"},
+            "sentiment": {"type": "string", "enum": ["positivo", "negativo", "neutro"]},
+            "user_need": {"type": "string"},
+            "evidence": {"type": "string"},
+        },
+        "required": ["quote", "topic", "sentiment", "user_need", "evidence"]
+    },
+}
 
-    REGRAS DE SAÍDA ESTRITAS:
-    1. Sua resposta DEVE ser APENAS o objeto JSON.
-    2. NÃO inclua nenhum texto, explicação ou comentário antes ou depois do JSON.
-    3. Garanta que todas as strings dentro do JSON, especialmente no campo 'quote', tenham aspas duplas (") devidamente escapadas com uma contrabarra (\\").
-    4. Certifique-se de que a saída seja um JSON válido, com todas as strings devidamente fechadas e sem caracteres inválidos.
-    5. Retorne no máximo 5 insights por bloco para garantir uma resposta concisa.
-""")
+PROMPT_SYSTEM = textwrap.dedent("""
+Você é um analista de dados especialista em UX Research.
+Sua tarefa é sintetizar dados qualitativos (texto) e quantitativos (KPIs) para gerar insights acionáveis.
 
-# Função para dividir texto em blocos menores (por tamanho ou por "Pergunta:")
-def split_text_content(text: str, max_chars: int = 2000) -> List[str]:
-    blocks = []
-    current_block = []
-    current_length = 0
-    lines = text.splitlines()
+Para cada insight, preencha:
+- "quote": citação representativa (texto do usuário)
+- "topic": categoria (ex: Usabilidade, Performance)
+- "sentiment": positivo | negativo | neutro
+- "user_need": necessidade do usuário
+- "evidence": diga se veio de qualitativo, quantitativo, ou ambos. Se quantitativo, mencione o KPI.
 
-    for line in lines:
-        line_length = len(line)
-        if current_length + line_length > max_chars and current_block:
-            blocks.append("\n".join(current_block))
-            current_block = [line]
-            current_length = line_length
+REGRAS:
+- Retorne APENAS JSON válido (array de objetos).
+- No máximo 5 insights por bloco.
+""").strip()
+
+def split_text_content(text: str, max_chars: int = 3500) -> List[str]:
+    text = text or ""
+    if not text.strip():
+        return []
+    blocks: List[str] = []
+    buf: List[str] = []
+    current = 0
+    for line in text.splitlines():
+        ln = line.strip("\n")
+        if current + len(ln) + 1 > max_chars and buf:
+            blocks.append("\n".join(buf))
+            buf = [ln]
+            current = len(ln) + 1
         else:
-            current_block.append(line)
-            current_length += line_length
-        if line.strip().startswith("Pergunta:") and current_block and current_length > 0:
-            blocks.append("\n".join(current_block[:-1]))
-            current_block = [line]
-            current_length = line_length
-
-    if current_block:
-        blocks.append("\n".join(current_block))
-    
+            buf.append(ln)
+            current += len(ln) + 1
+    if buf:
+        blocks.append("\n".join(buf))
     return [b for b in blocks if b.strip()]
 
-def extract_json_string(text):
-    # Extrai o maior bloco JSON entre chaves na resposta
-    match = re.search(r'(\{(?:[^{}]|(?R))*\})', text, re.DOTALL)
-    if match:
-        return match.group(1)
-    return None
-
-async def process_block(block: str, kpi_data: Optional[List[Dict[str, Any]]], model_id: str) -> List[Dict[str, Any]]:
-    quantitative_content = ""
-    if kpi_data:
-        try:
-            kpi_json_string = json.dumps(kpi_data, indent=2, ensure_ascii=False)
-            quantitative_content = f"---\nDADOS QUANTITATIVOS ---\n{kpi_json_string}"
-        except TypeError:
-            print("Aviso: kpi_data não pôde ser serializado para JSON.")
-
-    text_to_analyze = f"---\nDADOS QUALITATIVOS ---\n{block}\n\n{quantitative_content}".strip()
-
+def try_json_loads(s: str) -> Optional[Any]:
     try:
-        # 1. CONSTRUIR EXEMPLOS USANDO AS CLASSES DA BIBLIOTECA
-        examples = [
-            ExampleData(
-                text="O aplicativo é fácil de usar, mas poderia carregar as páginas mais rápido.",
-                extractions=[
-                    Extraction(
-                        extraction_class="Usabilidade", # Mapeado de "topic"
-                        extraction_text="O aplicativo é fácil de usar, mas poderia carregar as páginas mais rápido.", # Mapeado de "quote"
-                        attributes={ # O resto vai aqui dentro
-                            "sentiment": "negativo",
-                            "user_need": "Usuários querem uma navegação rápida e sem atrasos.",
-                            "evidence": "Qualitativo. Reclama da lentidão nas páginas."
-                        }
-                    )
-                ]
-            ),
-            ExampleData(
-                text="Adorei a possibilidade de acompanhar a entrega em tempo real, me deixa mais tranquilo.",
-                extractions=[
-                    Extraction(
-                        extraction_class="Rastreamento",
-                        extraction_text="Adorei a possibilidade de acompanhar a entrega em tempo real, me deixa mais tranquilo.",
-                        attributes={
-                            "sentiment": "positivo",
-                            "user_need": "Usuários querem transparência e controle sobre a entrega.",
-                            "evidence": "Qualitativo. Relato direto sobre a funcionalidade de rastreamento."
-                        }
-                    )
-                ]
-            ),
-            ExampleData(
-                text="A interface do app ficou confusa depois da última atualização.",
-                extractions=[
-                    Extraction(
-                        extraction_class="Design",
-                        extraction_text="A interface do app ficou confusa depois da última atualização.",
-                        attributes={
-                            "sentiment": "negativo",
-                            "user_need": "Usuários querem interfaces intuitivas, mesmo após mudanças.",
-                            "evidence": "Qualitativo. Reclamação relacionada a mudanças visuais."
-                        }
-                    )
-                ]
+        return json.loads(s)
+    except Exception:
+        return None
+
+def blocks_for_file(item: FileDataItem) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """
+    - Se category == 'pesquisa_usuario', espera content como JSON string:
+      { quantitativeKPIs: [...], qualitativeData: [{ pergunta, respostas: [...] }, ...] }
+      Converte cada pergunta+respostas em um bloco de texto.
+    - Caso contrário, trata content como texto puro (transcrição, etc) e faz chunking.
+    """
+    if item.category == "pesquisa_usuario":
+        parsed = try_json_loads(item.content)
+        if not isinstance(parsed, dict):
+            return (split_text_content(item.content), [])
+        kpis = parsed.get("quantitativeKPIs", []) or []
+        qblocks: List[str] = []
+        for q in parsed.get("qualitativeData", []):
+            pergunta = (q or {}).get("pergunta", "")
+            respostas = (q or {}).get("respostas", [])
+            if not pergunta or not isinstance(respostas, list) or not respostas:
+                continue
+            block = "Pergunta: " + pergunta.strip() + "\n" + "\n".join(
+                [str(r) for r in respostas if isinstance(r, str) and r.strip()]
             )
-        ]
+            if block.strip():
+                qblocks.extend(split_text_content(block))
+        return (qblocks, kpis)
+    else:
+        return (split_text_content(item.content), [])
 
-        # A chamada para a API agora recebe os exemplos no formato correto
-        result_document = lx.extract(
-            text_or_documents=text_to_analyze,
-            prompt_description=prompt_description,
-            examples=examples,
-            model_id=model_id
-        )
+def build_block_input(block: str, kpis: List[Dict[str, Any]]) -> str:
+    kpi_part = ""
+    if kpis:
+        try:
+            kpi_part = "\n\n---\nDADOS QUANTITATIVOS (KPIs)\n" + json.dumps(
+                kpis, ensure_ascii=False, indent=2
+            )
+        except Exception:
+            kpi_part = "\n\n---\nDADOS QUANTITATIVOS: [falha ao serializar]"
+    return f"DADOS QUALITATIVOS\n{block.strip()}{kpi_part}"
 
-        # 2. CONVERTER O RESULTADO DE VOLTA PARA O FORMATO JSON/DICT
-        insights = []
-        if result_document and result_document.extractions:
-            for extraction_obj in result_document.extractions:
-                # Monta o dicionário no formato que sua API espera retornar
-                insight_dict = {
-                    "topic": extraction_obj.extraction_class,
-                    "quote": extraction_obj.extraction_text,
-                    # Usa .get() para segurança caso os atributos não existam
-                    "sentiment": extraction_obj.attributes.get("sentiment", "neutro"),
-                    "user_need": extraction_obj.attributes.get("user_need", "Não especificada"),
-                    "evidence": extraction_obj.attributes.get("evidence", "Qualitativo")
+async def call_gemini_structured(client: genai.Client, model_id: str, content: str) -> List[Dict[str, Any]]:
+    """
+    Usa apenas role 'user' (o SDK não aceita 'system' em contents).
+    Colamos o PROMPT_SYSTEM + conteúdo em uma única mensagem.
+    """
+    try:
+        resp = client.models.generate_content(
+            model=model_id,
+            contents=[
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": (
+                                f"{PROMPT_SYSTEM}\n\n"
+                                "### DADOS PARA ANÁLISE\n"
+                                f"{content}"
+                            )
+                        }
+                    ],
                 }
-                insights.append(insight_dict)
-
-        return insights
-
+            ],
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": INSIGHT_SCHEMA,  # já sem additionalProperties
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "top_k": 40,
+            },
+        )
+        raw = resp.text
+        parsed = try_json_loads(raw)
+        if isinstance(parsed, list):
+            cleaned: List[Dict[str, Any]] = []
+            for it in parsed[:5]:
+                if not isinstance(it, dict):
+                    continue
+                quote = (it.get("quote") or "").strip()
+                topic = (it.get("topic") or "").strip()
+                sentiment = (it.get("sentiment") or "").strip()
+                user_need = (it.get("user_need") or "").strip()
+                evidence = (it.get("evidence") or "").strip()
+                if not quote or not topic:
+                    continue
+                if sentiment not in {"positivo", "negativo", "neutro"}:
+                    sentiment = "neutro"
+                cleaned.append(
+                    {
+                        "quote": quote,
+                        "topic": topic,
+                        "sentiment": sentiment,
+                        "user_need": user_need or "Não especificada",
+                        "evidence": evidence or "Qualitativo",
+                    }
+                )
+            return cleaned
+        return []
     except Exception as e:
-        print(f"Erro inesperado ao processar bloco: {e}")
-        import traceback
-        traceback.print_exc()
-        return []   
-    
-    
-async def process_file(file_data: Dict[str, str], kpi_data: Optional[List[Dict[str, Any]]], model_id: str) -> Dict[str, Any]:
-    filename = list(file_data.keys())[0]
-    content = file_data[filename]
-    blocks = split_text_content(content)
-    file_insights = []
+        print(f"[ERR] Gemini structured output falhou: {e}")
+        return []
 
-    for block in blocks:
-        block_insights = await process_block(block, kpi_data, model_id)
-        file_insights.extend(block_insights)
 
-    # Remove duplicados por quote
-    unique_insights = []
-    seen_quotes = set()
-    for insight in file_insights:
-        if insight["quote"] not in seen_quotes:
-            unique_insights.append(insight)
-            seen_quotes.add(insight["quote"])
+def dedupe_by_quote(insights: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for ins in insights:
+        q = ins.get("quote", "").strip()
+        if not q or q in seen:
+            continue
+        seen.add(q)
+        out.append(ins)
+    return out
 
-    return {"filename": filename, "insights": unique_insights}
-
+# -----------------------------------------------------------------------------
+# Endpoint principal
+# -----------------------------------------------------------------------------
 @app.post("/extract", response_model=List[AnalysisResult])
 async def extract_data(request: FileAnalysisRequest):
-    all_results = []
-    model_id = os.getenv("LANGEXTRACT_MODEL_ID", "gemini-1.5-flash-latest")
-    for file_data in request.files:
-        result = await process_file(file_data, request.kpi_data, model_id)
-        all_results.append(result)
-    return all_results
+    """
+    Processa arquivos (texto/JSON de pesquisa) e retorna insights por arquivo.
+    """
+    model_id = os.getenv("GEMINI_MODEL_ID", "gemini-1.5-flash-8b")
+    try:
+        client = get_gemini_client()
+    except RuntimeError as e:
+        # Não quebra o caller: retorna OK com vazio se chave não estiver configurada
+        print("[WARN]", e)
+        return [
+            AnalysisResult(filename=f.filename, insights=[])
+            for f in request.files
+        ]
+
+    results: List[AnalysisResult] = []
+    print(f"[extract] Processando {len(request.files)} arquivo(s) com {model_id}")
+
+    for file_item in request.files:
+        blocks, kpis = blocks_for_file(file_item)
+        all_insights: List[Dict[str, Any]] = []
+
+        if not blocks:
+            print(f"[extract] AVISO: sem blocos válidos em '{file_item.filename}' (category={file_item.category})")
+
+        for block in blocks:
+            content_for_model = build_block_input(block, kpis)
+            insights = await call_gemini_structured(client, model_id, content_for_model)
+            all_insights.extend(insights)
+
+        unique = dedupe_by_quote(all_insights)
+        if len(unique) > 60:
+            unique = unique[:60]
+
+        results.append(AnalysisResult(filename=file_item.filename, insights=unique))
+
+    return results
+
+# -----------------------------------------------------------------------------
+# Healthcheck (expõe has_key para debug sem vazar a chave)
+# -----------------------------------------------------------------------------
+@app.get("/healthz")
+def healthz():
+    has_key = bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+    try:
+        _ = get_gemini_client()
+        ok = True
+    except Exception:
+        ok = False
+    return {"ok": ok, "has_key": has_key, "time": datetime.utcnow().isoformat() + "Z"}
