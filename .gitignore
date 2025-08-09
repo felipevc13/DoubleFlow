@@ -17,4 +17,5 @@ extraction_service/.env*
 repomix-output.xml
 *.repomix.xml
 node_modules/
+
 node_modules/
