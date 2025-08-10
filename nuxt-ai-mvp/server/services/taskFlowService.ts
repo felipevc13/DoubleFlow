@@ -55,8 +55,20 @@ async function persistTaskFlow(
   supabase: Supa,
   taskId: string,
   nodes: TaskFlowNode[],
-  edges: TaskFlowEdge[]
+  edges: TaskFlowEdge[],
+  options?: { force?: boolean }
 ) {
+  // Guarda anti-vazio: evita sobrescrever o banco com []/[] por engano
+  if (
+    !options?.force &&
+    Array.isArray(nodes) &&
+    Array.isArray(edges) &&
+    nodes.length === 0 &&
+    edges.length === 0
+  ) {
+    // Silenciosamente ignora a atualização vazia
+    return;
+  }
   const { data, error } = await supabase
     .from("task_flows")
     .update({

@@ -18,6 +18,7 @@
           class="vue-flow-container absolute inset-0"
         >
           <VueFlow
+            :key="props.taskId"
             :id="flowId"
             ref="vueFlowRef"
             @vue-flow:init="onFlowInit"

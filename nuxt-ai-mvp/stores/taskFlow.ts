@@ -276,6 +276,7 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
   const propagation = usePropagation();
 
   const isInitialLoadComplete = ref(false); // <<< Add flag
+  const isTransitioning = ref(false);
   const supabaseChannel: Ref<RealtimeChannel | null> = ref(null); // <<< Type the channel ref - Will be removed if setupRealtimeSubscription is fully removed
   const empathMapLastProcessedInputs = ref<Record<string, string | null>>({}); // Stores last processed input string for EmpathMapCards
   const affinityMapLastProcessedInputs = ref<Record<string, string | null>>({}); // Stores last processed input string for AffinityMapCards
@@ -613,9 +614,9 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
 
   // <<< Add type annotation for input
   const loadTaskFlow = async (taskId: string) => {
-    clearTaskFlowState();
     resetVueFlowInstancePromise();
     isInitialLoadComplete.value = false;
+    isTransitioning.value = true;
     try {
       const {
         nodes: loadedNodes,
@@ -654,17 +655,15 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
           }
         }
       }
-
-      isInitialLoadComplete.value = true;
     } catch (err) {
       console.error(
         "[TaskFlowStore loadTaskFlow] error via useTaskFlowPersistence:",
         err
       );
-      currentTaskId.value = taskId;
-      nodes.value = [];
-      edges.value = [];
-      viewport.value = { x: 0, y: 0, zoom: 1, width: 0, height: 0 };
+      // Não tocar no estado atual; manter isInitialLoadComplete=false para bloquear autosave.
+      return;
+    } finally {
+      isTransitioning.value = false;
       isInitialLoadComplete.value = true;
     }
     setupRealtimeSubscription(taskId);
@@ -672,6 +671,7 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
 
   const saveTaskFlow = async (): Promise<any | undefined> => {
     if (!currentTaskId.value) return;
+    if (isTransitioning.value || !isInitialLoadComplete.value) return;
     saveFlowDebounced({
       taskId: currentTaskId.value,
       nodes: nodes.value,
@@ -1814,7 +1814,7 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
     ([newNodes, newEdges], [oldNodes, oldEdges]) => {
       // REMOVED: isInitialLoadComplete check. Let debounce handle initial load flurry.
       // REINSTATING check to prevent premature saves on initial load:
-      if (isInitialLoadComplete.value) {
+      if (isInitialLoadComplete.value && !isTransitioning.value) {
         saveFlowDebounced({
           taskId: currentTaskId.value!,
           nodes: nodes.value,
@@ -2139,6 +2139,7 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
     viewport,
     isVueFlowInstanceReady,
     isInitialLoadComplete,
+    isTransitioning,
     loadingStates,
     empathMapLastProcessedInputs,
     // Do not return the promise directly; instead, expose as a computed getter

@@ -81,6 +81,11 @@ export function useTaskFlowPersistence() {
     edges: TaskFlowEdge[];
     viewport: Viewport;
   }) {
+    // Proteção: não persistir estado vazio (evita sobrescrever o banco por engano)
+    if (!Array.isArray(nodes) || !Array.isArray(edges)) return;
+    if (nodes.length === 0 && edges.length === 0) {
+      return;
+    }
     const user = useSupabaseUser();
     const supabase = useSupabaseClient();
     if (!user.value) return;
