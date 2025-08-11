@@ -127,7 +127,7 @@ export function createUpdateNodeTool() {
           "[updateNode] Applying direct update or approved visual update for node",
           nodeId
         );
-        // EXTRAI EVENTO DO CONFIG
+        // Extract the event object from the H3 config passed by the tool executor
         const event = config?.configurable?.event;
         if (!event) {
           throw new Error(

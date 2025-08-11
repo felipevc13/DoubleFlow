@@ -21,6 +21,7 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
   const taskFlowStore = useTaskFlowStore();
   const modalStore = useModalStore();
   const currentCorrelationId = ref<string | null>(null);
+  const lastServerCorrelationId = ref<string | null>(null);
 
   const executeSideEffects = async (
     effects: SideEffect[],
@@ -30,6 +31,26 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       "[useAgentLogic] executeSideEffects received effects:",
       JSON.stringify(effects, null, 2)
     );
+    console.log(
+      "[executeSideEffects] ids => incoming:",
+      correlationId,
+      " current:",
+      currentCorrelationId.value,
+      " lastServer:",
+      lastServerCorrelationId.value
+    );
+    // Adopt server correlationId if we don't have one yet (e.g., page reload -> modal confirm path)
+    if (!currentCorrelationId.value && correlationId) {
+      console.log(
+        "[executeSideEffects] adopting server correlationId:",
+        correlationId
+      );
+      currentCorrelationId.value = correlationId;
+    }
+    // Track last correlationId we saw from server
+    if (correlationId) {
+      lastServerCorrelationId.value = correlationId;
+    }
     if (correlationId !== currentCorrelationId.value) return;
     const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
     for (const effect of effects) {
@@ -72,40 +93,83 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
             break;
           }
           case "SHOW_CONFIRMATION": {
-            const payload = effect.payload;
-            if (payload.approvalStyle === "visual" && payload.nodeId) {
-              const node = taskFlowStore.nodes.find(
-                (n) => n.id === payload.nodeId
-              );
-              if (node) {
-                modalStore.openModal(
-                  node.type as ModalType,
-                  {
-                    diffMode: true,
-                    originalData: payload.originalData,
-                    proposedData: payload.proposedData,
-                    diffFields: payload.diffFields,
-                    modalTitle: payload.modalTitle,
-                    actionToConfirm: {
-                      tool_name: payload.tool_name,
-                      parameters: payload.parameters,
-                    },
+            const p = effect.payload;
+            const correlationHint =
+              correlationId ||
+              currentCorrelationId.value ||
+              lastServerCorrelationId.value ||
+              null;
+
+            // Decide UI: default to MODAL unless approvalStyle === 'text'
+            const forceText = p?.approvalStyle === "text";
+
+            // Resolve node & nodeType so we always know which modal to open
+            const node = taskFlowStore.nodes.find((n) => n.id === p.nodeId);
+            const nodeType = (node?.type as ModalType) ?? ModalType.problem;
+
+            // Normalize diff/proposed data
+            const diffFields = Array.isArray(p?.diffFields)
+              ? p.diffFields
+              : (p as any)?.meta?.ui?.diffFields ?? [];
+            const originalData = p?.originalData ?? node?.data ?? {};
+            const proposedData =
+              p?.proposedData ?? p?.parameters?.newData ?? {};
+
+            if (!forceText) {
+              console.log("[SHOW_CONFIRMATION] opening modal with:", {
+                nodeType,
+                nodeId: p.nodeId,
+                modalTitle: p.modalTitle,
+                message: p.displayMessage,
+                originalData,
+                proposedData,
+                diffFields,
+                actionToConfirm: {
+                  tool_name: p.tool_name,
+                  parameters: p.parameters,
+                  nodeId: p.nodeId,
+                  correlationId: correlationHint,
+                },
+              });
+
+              modalStore.openModal(
+                nodeType,
+                {
+                  mode: "confirm",
+                  diffMode: true,
+                  nodeId: p.nodeId,
+                  modalTitle: p.modalTitle || "Revisar Alterações Propostas",
+                  message:
+                    p.displayMessage ||
+                    "Revise e confirme as alterações propostas.",
+                  originalData,
+                  proposedData,
+                  diffFields,
+                  actionToConfirm: {
+                    tool_name: p.tool_name,
+                    parameters: p.parameters,
+                    nodeId: p.nodeId,
+                    correlationId: correlationHint,
                   },
-                  payload.nodeId
-                );
-              }
+                  confirmLabel: "Confirmar",
+                  cancelLabel: "Cancelar",
+                },
+                p.nodeId
+              );
             } else {
-              // Confirmação no chat (padrão texto)
+              // Chat approval (text-only)
               messages.value.push({
                 role: "confirmation",
-                content: payload.displayMessage,
-                action: { ...payload },
+                content: p.displayMessage,
+                action: { ...p },
               });
             }
             break;
           }
           case "EXECUTE_ACTION": {
             const { tool_name, parameters, feedbackMessage } = effect.payload;
+            console.log("[EXECUTE_ACTION] tool:", tool_name);
+            console.log("[EXECUTE_ACTION] parameters:", parameters);
             if (feedbackMessage) {
               messages.value.push({ role: "agent", content: feedbackMessage });
             }
@@ -125,6 +189,25 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
                   );
                   break;
                 }
+                case "datasource.create": {
+                  // Sem aprovação: cria nó datasource e conecta ao sourceNode (quando houver)
+                  const { sourceNodeId } = parameters;
+                  const sourceNode = taskFlowStore.nodes.find(
+                    (n) => n.id === sourceNodeId
+                  );
+                  await taskFlowStore.addNodeAndConnect(
+                    "datasource",
+                    sourceNodeId,
+                    sourceNode?.position,
+                    sourceNode?.dimensions?.height
+                  );
+                  break;
+                }
+                case "datasource.delete": {
+                  const { nodeId } = parameters;
+                  await taskFlowStore.removeNode(nodeId);
+                  break;
+                }
                 case "updateNode": {
                   const { nodeId, newData } = parameters;
                   await taskFlowStore.updateNodeData(nodeId, newData);
@@ -132,16 +215,12 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
                   break;
                 }
                 case "problem.update": {
-                  // parameters may come with or without an explicit nodeId
-                  const { nodeId, ...newData } = parameters as {
-                    nodeId?: string;
-                    title?: string;
-                    description?: string;
-                    [key: string]: any;
-                  };
-                  // Fallback: first node of type "problem"
+                  // parameters may arrive as { newData: {...}, nodeId, ... } or flattened { title, description, nodeId }
+                  const p = parameters as Record<string, any>;
+
+                  // Determine target nodeId (explicit or first problem node)
                   const targetId =
-                    nodeId ??
+                    p.nodeId ??
                     taskFlowStore.nodes.find((n) => n.type === "problem")?.id;
                   if (!targetId) {
                     console.warn(
@@ -154,7 +233,39 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
                     });
                     break;
                   }
-                  await taskFlowStore.updateNodeData(targetId, newData);
+
+                  // Normalize payload: prefer p.newData when present; otherwise pick only known fields from flat shape
+                  const normalizedData = p.newData ?? {
+                    ...(typeof p.title !== "undefined"
+                      ? { title: p.title }
+                      : {}),
+                    ...(typeof p.description !== "undefined"
+                      ? { description: p.description }
+                      : {}),
+                  };
+
+                  console.log("[problem.update] targetId:", targetId);
+                  console.log(
+                    "[problem.update] normalizedData:",
+                    normalizedData
+                  );
+
+                  if (
+                    !normalizedData ||
+                    Object.keys(normalizedData).length === 0
+                  ) {
+                    console.warn(
+                      "problem.update: payload sem campos válidos para atualizar."
+                    );
+                    messages.value.push({
+                      role: "system",
+                      content:
+                        "Nada para atualizar no Problema (payload vazio).",
+                    });
+                    break;
+                  }
+
+                  await taskFlowStore.updateNodeData(targetId, normalizedData);
                   modalStore.closeModal(); // fecha modal se estiver aberto
                   break;
                 }
@@ -173,7 +284,7 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
               }
               messages.value.push({
                 role: "agent",
-                content: "Ação concluída!",
+                content: "Ação de texto concluída!",
               });
             } catch (e) {
               messages.value.push({
@@ -257,6 +368,20 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
           uiContext,
         },
       });
+      // Persist server correlation for possible resume (e.g., modal confirm)
+      if (response?.correlationId) {
+        lastServerCorrelationId.value = response.correlationId;
+        // Always adopt the server correlationId if it differs
+        if (currentCorrelationId.value !== response.correlationId) {
+          currentCorrelationId.value = response.correlationId;
+        }
+        console.log(
+          "[sendMessage] server correlationId:",
+          response.correlationId
+        );
+      } else {
+        console.log("[sendMessage] no correlationId in response");
+      }
       if (
         response.correlationId === currentCorrelationId.value &&
         response.sideEffects
@@ -276,39 +401,74 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
     }
   };
 
-  const sendResumePayload = async (payload: any) => {
+  const sendResumePayload = async (args: {
+    correlationId?: string;
+    taskId?: string;
+    resume: { value: any };
+  }) => {
     isLoading.value = true;
-    const problemNode = taskFlowStore.nodes.find((n) => n.type === "problem");
-    const canvasContext = {
-      problem_statement: problemNode
-        ? {
-            title: problemNode.data?.title || "",
-            description: problemNode.data?.description || "",
-          }
-        : { title: "", description: "" },
-      nodes: taskFlowStore.nodes.map((n) => ({
-        id: n.id,
-        type: n.type,
-        data: { ...n.data },
-      })),
-      edges: taskFlowStore.edges.map((e) => ({
-        source: e.source,
-        target: e.target,
-      })),
-    };
     try {
+      const correlationForResume =
+        args?.correlationId ||
+        currentCorrelationId.value ||
+        lastServerCorrelationId.value ||
+        null;
+
+      console.log(
+        "[sendResumePayload] using correlationId:",
+        correlationForResume
+      );
+
+      if (!correlationForResume) {
+        console.warn(
+          "[sendResumePayload] missing correlationId, aborting resume."
+        );
+        messages.value.push({
+          role: "system",
+          content:
+            "Não foi possível retomar a execução porque faltou o correlationId. Tente confirmar novamente.",
+        });
+        isLoading.value = false;
+        return;
+      }
+
+      // Strip possible Vue proxies and ensure a plain object for resume.value
+      const safeResumeValue = JSON.parse(
+        JSON.stringify(args.resume?.value ?? {})
+      );
+
+      const body = {
+        mode: "resume",
+        taskId: args.taskId ?? taskIdRef.value,
+        correlationId: correlationForResume,
+        resume: { value: safeResumeValue }, // 🔧 shape esperado pelo humanApprovalNode quando retomado via Command({ resume })
+      };
+
+      console.log("[sendResumePayload] posting body:", body);
+
       const response = await $fetch<any>("/api/ai/agentChat", {
         method: "POST",
-        body: {
-          taskId: taskIdRef.value,
-          resumePayload: payload,
-          canvasContext,
-          correlationId: currentCorrelationId.value,
-        },
+        body,
       });
+
+      console.log("[sendResumePayload] response:", response);
+
+      if (response?.correlationId) {
+        lastServerCorrelationId.value = response.correlationId;
+        if (currentCorrelationId.value !== response.correlationId) {
+          currentCorrelationId.value = response.correlationId;
+        }
+        console.log(
+          "[sendResumePayload] server correlationId:",
+          response.correlationId
+        );
+      } else {
+        console.log("[sendResumePayload] no correlationId in response");
+      }
+
       if (
-        response.correlationId === currentCorrelationId.value &&
-        response.sideEffects
+        response?.correlationId === currentCorrelationId.value &&
+        response?.sideEffects
       ) {
         await executeSideEffects(
           response.sideEffects as SideEffect[],
@@ -326,17 +486,157 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
   };
 
   const handleConfirmation = async (actionProposal: any) => {
+    console.log("[handleConfirmation] Received:", actionProposal);
     messages.value = messages.value.filter(
       (msg) => msg.role !== "confirmation"
     );
-    await sendResumePayload({ confirmed: true, action: actionProposal });
+
+    // Normalize action
+    const raw = actionProposal;
+    const act = raw?.tool_name
+      ? raw
+      : raw?.action?.tool_name
+      ? raw.action
+      : undefined;
+
+    if (!act) {
+      console.warn("[handleConfirmation] Invalid or missing action:", raw);
+      messages.value.push({
+        role: "system",
+        content:
+          "Não foi possível confirmar: payload de ação inválido. Tente novamente.",
+      });
+      return;
+    }
+
+    const safeCorrelationId =
+      act?.correlationId ||
+      currentCorrelationId.value ||
+      lastServerCorrelationId.value ||
+      null;
+
+    if (!safeCorrelationId) {
+      console.warn(
+        "[handleConfirmation] Missing correlationId, aborting resume."
+      );
+      messages.value.push({
+        role: "system",
+        content:
+          "Não foi possível retomar a execução porque faltou o correlationId. Tente confirmar novamente.",
+      });
+      return;
+    }
+
+    // Resolve safe taskId
+    const safeTaskId =
+      (taskIdRef && "value" in taskIdRef
+        ? (taskIdRef as any).value
+        : undefined) ??
+      act?.parameters?.taskId ??
+      null;
+
+    if (!safeTaskId) {
+      console.warn("[handleConfirmation] Missing taskId, aborting resume.");
+      messages.value.push({
+        role: "system",
+        content:
+          "Não foi possível retomar a execução porque faltou o taskId. Tente confirmar novamente.",
+      });
+      return;
+    }
+
+    // 🔧 Mesmo shape do visual: confirmado + approved_action
+    const resumeValue = {
+      confirmed: true,
+      approved_action: {
+        tool_name: act.tool_name,
+        parameters: {
+          ...(act.parameters ?? {}),
+          isApprovedUpdate: true,
+        },
+        nodeId: act.nodeId,
+      },
+    };
+
+    console.log("[handleConfirmation] Sending resume with value:", resumeValue);
+
+    await sendResumePayload({
+      correlationId: safeCorrelationId,
+      taskId: safeTaskId,
+      resume: { value: resumeValue },
+    });
   };
 
   const handleCancellation = async (actionProposal: any) => {
+    console.log("[handleCancellation] Received:", actionProposal);
     messages.value = messages.value.filter(
       (msg) => msg.role !== "confirmation"
     );
-    await sendResumePayload({ confirmed: false, action: actionProposal });
+
+    // Normalize action
+    const raw = actionProposal;
+    const act = raw?.tool_name
+      ? raw
+      : raw?.action?.tool_name
+      ? raw.action
+      : undefined;
+
+    if (!act) {
+      console.warn("[handleCancellation] Invalid or missing action:", raw);
+      messages.value.push({
+        role: "system",
+        content:
+          "Não foi possível cancelar: payload de ação inválido. Tente novamente.",
+      });
+      return;
+    }
+
+    const safeCorrelationId =
+      act?.correlationId ||
+      currentCorrelationId.value ||
+      lastServerCorrelationId.value ||
+      null;
+
+    if (!safeCorrelationId) {
+      console.warn(
+        "[handleCancellation] Missing correlationId, aborting resume."
+      );
+      messages.value.push({
+        role: "system",
+        content:
+          "Não foi possível retomar a execução porque faltou o correlationId. Tente cancelar novamente.",
+      });
+      return;
+    }
+
+    // Resolve safe taskId
+    const safeTaskId =
+      (taskIdRef && "value" in taskIdRef
+        ? (taskIdRef as any).value
+        : undefined) ??
+      act?.parameters?.taskId ??
+      null;
+
+    if (!safeTaskId) {
+      console.warn("[handleCancellation] Missing taskId, aborting resume.");
+      messages.value.push({
+        role: "system",
+        content:
+          "Não foi possível retomar a execução porque faltou o taskId. Tente cancelar novamente.",
+      });
+      return;
+    }
+
+    // 🔧 Para cancelamento basta confirmed:false
+    const resumeValue = { confirmed: false };
+
+    console.log("[handleCancellation] Sending resume with value:", resumeValue);
+
+    await sendResumePayload({
+      correlationId: safeCorrelationId,
+      taskId: safeTaskId,
+      resume: { value: resumeValue },
+    });
   };
 
   const fetchHistory = async () => {
@@ -363,16 +663,99 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
   };
 
   const handleModalConfirmation = async (action: any) => {
+    console.log("[handleModalConfirmation] Recebido action:", action);
+    console.log(
+      "[handleModalConfirmation] currentCorrelationId:",
+      currentCorrelationId.value
+    );
     modalStore.closeModal();
-    // Adiciona o flag isApprovedUpdate para ações de update que exigem aprovação visual
-    const actionWithApproval = {
-      ...action,
-      parameters: {
-        ...action.parameters,
-        isApprovedUpdate: true,
+
+    // Normaliza: aceita tanto uma ação direta { tool_name, parameters }
+    // quanto wrappers do tipo { action: {...} }
+    const raw = action;
+    const act = raw?.tool_name
+      ? raw
+      : raw?.action?.tool_name
+      ? raw.action
+      : undefined;
+
+    console.log("[handleModalConfirmation] Ação normalizada:", act);
+
+    if (!act) {
+      console.warn("[handleModalConfirmation] Ação inválida ou ausente:", raw);
+      messages.value.push({
+        role: "system",
+        content:
+          "Não foi possível confirmar: payload de ação inválido. Tente novamente.",
+      });
+      return;
+    }
+
+    const safeCorrelationId =
+      act?.correlationId ||
+      currentCorrelationId.value ||
+      lastServerCorrelationId.value ||
+      null;
+
+    if (!safeCorrelationId) {
+      console.warn(
+        "[handleModalConfirmation] Missing correlationId, aborting resume."
+      );
+      messages.value.push({
+        role: "system",
+        content:
+          "Não foi possível retomar a execução porque faltou o correlationId. Tente confirmar novamente.",
+      });
+      return;
+    }
+
+    // Resolve safe taskId (evita erro quando taskIdRef não está pronto)
+    const safeTaskId =
+      (taskIdRef && "value" in taskIdRef
+        ? (taskIdRef as any).value
+        : undefined) ??
+      act?.parameters?.taskId ??
+      null;
+
+    if (!safeTaskId) {
+      console.warn(
+        "[handleModalConfirmation] Missing taskId, aborting resume."
+      );
+      messages.value.push({
+        role: "system",
+        content:
+          "Não foi possível retomar a execução porque faltou o taskId. Tente confirmar novamente.",
+      });
+      return;
+    }
+
+    // 🔧 Formato que o humanApprovalNode espera ao retomar do interrupt:
+    const resumeValue = {
+      confirmed: true,
+      approved_action: {
+        tool_name: act.tool_name,
+        parameters: {
+          ...(act.parameters ?? {}),
+          isApprovedUpdate: true,
+        },
+        nodeId: act.nodeId,
       },
     };
-    await sendResumePayload({ confirmed: true, action: actionWithApproval });
+
+    console.log(
+      "[handleModalConfirmation] Enviando resume com value:",
+      resumeValue
+    );
+    console.log(
+      "[handleModalConfirmation] will resume with correlation:",
+      safeCorrelationId
+    );
+
+    await sendResumePayload({
+      correlationId: safeCorrelationId,
+      taskId: safeTaskId,
+      resume: { value: resumeValue },
+    });
   };
 
   return {

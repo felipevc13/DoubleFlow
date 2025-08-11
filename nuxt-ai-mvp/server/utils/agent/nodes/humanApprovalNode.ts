@@ -12,44 +12,75 @@ export async function humanApprovalNode(
     "[humanApprovalNode] Estado RECEBIDO:",
     JSON.stringify(state, null, 2)
   );
-  const userDecision = state.input as any;
-  const existingMessages = state.messages || [];
 
-  // FASE 2: Processa a resposta do usuário (retomada do grafo)
-  if (userDecision && typeof userDecision.confirmed === "boolean") {
-    if (userDecision.confirmed === true) {
-      consola.info(
-        "[humanApprovalNode] Ação confirmada pelo usuário. Preparando para execução."
-      );
+  const existingMessages = state.messages || [];
+  const proposal = (state as any).pending_confirmation;
+
+  // 1) Sem proposta → nada a fazer
+  if (!proposal) {
+    consola.warn(
+      "[humanApprovalNode] Chamado sem proposta pendente. Seguindo em frente."
+    );
+    return {};
+  }
+
+  // 2) Primeira passagem: interrompe para aguardar confirmação do usuário.
+  consola.info(
+    "[humanApprovalNode] Interrompendo execução para aguardar confirmação do usuário."
+  );
+  consola.debug(
+    "[humanApprovalNode] Proposta:",
+    JSON.stringify(
+      {
+        tool_name: (proposal as any)?.tool_name,
+        nodeId: (proposal as any)?.nodeId,
+        approvalStyle: (proposal as any)?.approvalStyle,
+        diffFields: Array.isArray((proposal as any)?.diffFields)
+          ? (proposal as any).diffFields
+          : undefined,
+      },
+      null,
+      2
+    )
+  );
+
+  // ⚠️ Padrão correto: Aguardar o resume do client
+  const decision = await interrupt(proposal as any);
+
+  consola.info(
+    "[humanApprovalNode] Decision recebida na retomada:",
+    JSON.stringify(decision, null, 2)
+  );
+
+  // 3) Processa o valor retornado no resume: { confirmed: boolean, approved_action?: {...} }
+  if (
+    decision &&
+    typeof decision === "object" &&
+    "confirmed" in (decision as any)
+  ) {
+    const confirmed = Boolean((decision as any).confirmed);
+
+    if (confirmed) {
+      const approved = (decision as any).approved_action || null; // { tool_name, parameters, nodeId }
       const ret: Partial<PlanExecuteState> = {
-        pending_execute: userDecision.action,
-        pending_confirmation: null, // Limpa a confirmação pendente
+        pending_confirmation: null,
+        pending_execute: approved,
         sideEffects: [
           { type: "POST_MESSAGE", payload: { text: "Ação confirmada!" } },
           { type: "CLOSE_MODAL", payload: {} },
         ] as SideEffect[],
-        input: "", // Limpa o input para não ser reprocessado
+        input: "", // evita reprocessar o input anterior
         messages: existingMessages,
       };
       consola.info(
-        "[humanApprovalNode] Estado RETORNADO (Confirmado):",
-        JSON.stringify(ret, null, 2)
-      );
-      consola.info(
-        "[humanApprovalNode] pending_execute montado:",
+        "[humanApprovalNode] Confirmado. pending_execute montado:",
         JSON.stringify(ret.pending_execute, null, 2)
       );
-      consola.info(
-        "[humanApprovalNode] parâmetros recebidos na confirmação:",
-        JSON.stringify(userDecision, null, 2)
-      );
-      consola.debug("[humanApprovalNode] (CONFIRMADO) Retornando estado:", ret);
       return ret;
     } else {
-      consola.info("[humanApprovalNode] Ação cancelada pelo usuário.");
       const ret: Partial<PlanExecuteState> = {
-        pending_execute: null,
         pending_confirmation: null,
+        pending_execute: null,
         sideEffects: [
           { type: "POST_MESSAGE", payload: { text: "Ação cancelada." } },
           { type: "CLOSE_MODAL", payload: {} },
@@ -57,35 +88,14 @@ export async function humanApprovalNode(
         input: "",
         messages: existingMessages,
       };
-      consola.info(
-        "[humanApprovalNode] Estado RETORNADO (Cancelado):",
-        JSON.stringify(ret, null, 2)
-      );
-      consola.debug("[humanApprovalNode] (CANCELADO) Retornando estado:", ret);
+      consola.info("[humanApprovalNode] Cancelado pelo usuário.");
       return ret;
     }
   }
 
-  // FASE 1: Apresenta a proposta para o usuário (primeira passagem)
-  // Apenas pausa a execução do grafo aguardando a resposta do usuário.
-  const proposal = (state as any).pending_confirmation;
-
-  if (!proposal) {
-    consola.warn(
-      "[humanApprovalNode] Chamado sem proposta pendente e sem payload de retomada. Seguindo em frente."
-    );
-    consola.debug(
-      "[humanApprovalNode] (SEM PROPOSTA) Retornando estado vazio: {}"
-    );
-    return {};
-  }
-
-  // **AÇÃO CRÍTICA**: Interrompe o grafo para aguardar a resposta do usuário.
-  interrupt(proposal);
-
-  consola.debug(
-    "[humanApprovalNode] (INTERROMPIDO) Retornando estado vazio: {}"
+  // 4) Se a retomada não trouxe o shape esperado, preserva a proposta
+  consola.warn(
+    "[humanApprovalNode] Resume sem shape esperado; mantendo proposta pendente."
   );
-  // Retorna vazio pois só pausa a execução para aguardar input do usuário.
-  return {};
+  return { pending_confirmation: proposal };
 }

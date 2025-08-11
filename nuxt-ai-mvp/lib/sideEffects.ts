@@ -25,14 +25,16 @@ export const ShowConfirm = z.object({
   type: z.literal("SHOW_CONFIRMATION"),
   payload: z.object({
     tool_name: z.string(),
-    parameters: z.record(z.any()),
     displayMessage: z.string(),
-    approvalStyle: z.string().optional(),
+    parameters: z.record(z.any()).optional().default({}),
+    approvalStyle: z.enum(["visual", "text"]).optional(),
     diffFields: z.array(z.string()).optional(),
     originalData: z.record(z.any()).optional(),
     proposedData: z.record(z.any()).optional(),
     nodeId: z.string().optional(),
     modalTitle: z.string().optional(),
+    correlationId: z.string().optional(),
+    interruptId: z.string().optional(),
   }),
 });
 const ExecuteAction = z.object({

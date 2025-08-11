@@ -8,6 +8,8 @@ import pg from "pg";
 import { serverSupabaseClient, serverSupabaseUser } from "#supabase/server";
 import { SupabaseChatMessageHistory } from "~/server/utils/agent-tools/supabaseMemory";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
+import { randomUUID } from "crypto";
+import { Command } from "@langchain/langgraph";
 
 export default defineEventHandler(
   async (
@@ -15,11 +17,33 @@ export default defineEventHandler(
   ): Promise<{ sideEffects: SideEffect[]; correlationId: string }> => {
     consola.info("[agentChat] === Novo request iniciado ===");
     const body = await readBody(event);
-    let { userInput, taskId, canvasContext, correlationId, resumePayload } =
-      body;
+    let {
+      userInput,
+      taskId,
+      canvasContext,
+      correlationId,
+      mode,
+      resume,
+      interruptId: incomingInterruptId,
+    } = body as {
+      userInput?: string;
+      taskId?: string;
+      canvasContext?: any;
+      correlationId?: string;
+      mode?: "resume" | string;
+      resume?: { value?: any };
+      interruptId?: string;
+    };
+
+    // Garante um correlationId para amarrar a confirmação ao turno interrompido
+    if (!correlationId || typeof correlationId !== "string") {
+      correlationId = randomUUID();
+    }
+
     consola.debug("[agentChat] Received body:", body);
     consola.debug("[agentChat] userInput:", userInput);
-    consola.debug("[agentChat] resumePayload:", resumePayload);
+    consola.debug("[agentChat] mode:", mode);
+    consola.debug("[agentChat] resume (value only):", resume?.value);
 
     const user = await serverSupabaseUser(event);
 
@@ -61,7 +85,12 @@ export default defineEventHandler(
     }
 
     const messagesForGraph = [...initialChatHistory];
-    if (typeof userInput === "string" && userInput.length > 0) {
+    // Só adicionar nova HumanMessage quando NÃO estamos retomando uma interrupção
+    if (
+      mode !== "resume" &&
+      typeof userInput === "string" &&
+      userInput.length > 0
+    ) {
       messagesForGraph.push(new HumanMessage(userInput));
     }
 
@@ -73,24 +102,27 @@ export default defineEventHandler(
     await checkpointer.setup();
 
     const agentGraph = getAgentGraph(checkpointer);
-    const config = { configurable: { thread_id: taskId, event } };
+    // Use a stable thread id to allow proper resume across requests
+    const threadId = taskId; // MUST be stable for the whole conversation/flow
+    const config = { configurable: { thread_id: threadId, event } };
     let finalState;
+    let interruptId: string | undefined;
 
     try {
-      if (resumePayload) {
+      if (mode === "resume" && resume?.value) {
+        consola.debug("[agentChat] === Entrando no modo RESUME ===", {
+          correlationId,
+          resumeValue: resume.value,
+        });
         consola.info(
-          "[agentChat] Retomando execução com payload:",
-          resumePayload
+          "[agentChat] Retomando execução via Command({ resume }) com correlationId:",
+          correlationId
         );
-        finalState = await agentGraph.invoke(
-          {
-            input: resumePayload,
-            messages: initialChatHistory,
-            taskId,
-            canvasContext,
-          },
-          config
-        );
+        const cmd = new Command({ resume: resume.value });
+        await agentGraph.invoke(cmd, config);
+        consola.success("[agentChat] RESUME: invoke concluído sem exceções");
+        finalState = await agentGraph.getState(config);
+        consola.success("[agentChat] RESUME: getState concluído");
       } else {
         consola.info("[agentChat] Invocando grafo com input inicial.");
         finalState = await agentGraph.invoke(
@@ -104,13 +136,47 @@ export default defineEventHandler(
         );
       }
     } catch (e: any) {
-      consola.warn("[agentChat] Grafo interrompido, recuperando estado.");
+      consola.error(
+        "[agentChat] ERRO durante invoke (resume=",
+        mode === "resume" && !!resume?.value,
+        ") corr=",
+        correlationId,
+        e
+      );
+      consola.warn(
+        "[agentChat] Grafo interrompido (ou outro erro). Recuperando estado.",
+        e
+      );
       finalState = await agentGraph.getState(config);
     }
 
     const realState = (
       "data" in finalState ? finalState.data : finalState
     ) as PlanExecuteState;
+
+    consola.debug(
+      "[agentChat] realState.pending_execute:",
+      (realState as any).pending_execute
+    );
+    consola.info("[agentChat] Estado compactado:", {
+      hasPendingConfirmation: Boolean(realState.pending_confirmation),
+      hasPendingExecute: Boolean((realState as any).pending_execute),
+      sideEffectsCount: (realState.sideEffects || []).length,
+    });
+
+    consola.debug(
+      "[agentChat] realState.messages length:",
+      realState.messages?.length ?? 0
+    );
+    consola.debug(
+      "[agentChat] realState.sideEffects length:",
+      realState.sideEffects?.length ?? 0
+    );
+    consola.debug(
+      "[agentChat] realState.pending_confirmation:",
+      realState.pending_confirmation
+    );
+    consola.debug("[agentChat] realState.response:", realState.response);
 
     // Salvar o histórico de chat no final de cada turno bem-sucedido
     const messagesToSave = realState.messages ?? [];
@@ -122,25 +188,110 @@ export default defineEventHandler(
       );
     }
 
-    let finalSideEffects: SideEffect[] = realState.sideEffects ?? [];
+    // Aggregate side effects from multiple sources (state, last_tool_result, direct invoke)
+    const effectsFromState = Array.isArray(realState.sideEffects)
+      ? realState.sideEffects
+      : [];
+    const effectsFromLastTool = Array.isArray(
+      (realState as any)?.last_tool_result?.sideEffects
+    )
+      ? (realState as any).last_tool_result.sideEffects
+      : [];
+    const invokeContainer =
+      finalState &&
+      typeof finalState === "object" &&
+      "data" in (finalState as any)
+        ? (finalState as any).data
+        : finalState;
+    const effectsFromInvoke = Array.isArray(
+      (invokeContainer as any)?.sideEffects
+    )
+      ? (invokeContainer as any).sideEffects
+      : [];
+
+    let finalSideEffects: SideEffect[] = [
+      ...effectsFromState,
+      ...effectsFromLastTool,
+      ...effectsFromInvoke,
+    ];
+    // de-duplicate by type + payload
+    const seenEffects = new Set<string>();
+    finalSideEffects = finalSideEffects.filter((e: any) => {
+      try {
+        const key = `${e?.type}::${JSON.stringify(e?.payload ?? null)}`;
+        if (seenEffects.has(key)) return false;
+        seenEffects.add(key);
+        return true;
+      } catch {
+        return true;
+      }
+    });
 
     if (realState.pending_confirmation) {
+      consola.info(
+        "[agentChat] pending_confirmation detectado. Preparando SHOW_CONFIRMATION."
+      );
       if (
         !finalSideEffects.some((effect) => effect.type === "SHOW_CONFIRMATION")
       ) {
+        consola.debug(
+          "[agentChat] Conteúdo de pending_confirmation:",
+          realState.pending_confirmation
+        );
+
+        const pc: any = realState.pending_confirmation;
+        const approvalStyle: "text" | "visual" | undefined =
+          pc?.approvalStyle === "visual"
+            ? "visual"
+            : pc?.approvalStyle === "text"
+            ? "text"
+            : undefined;
+        const diffFields: string[] | undefined = Array.isArray(pc?.diffFields)
+          ? pc.diffFields.filter((f: any) => typeof f === "string")
+          : undefined;
+
         finalSideEffects.push({
           type: "SHOW_CONFIRMATION",
           payload: {
-            ...realState.pending_confirmation,
+            tool_name: pc?.tool_name,
+            parameters: pc?.parameters,
             displayMessage:
-              realState.pending_confirmation.displayMessage ||
-              "Confirme esta ação proposta.",
+              pc?.displayMessage || "Confirme esta ação proposta.",
+            approvalStyle,
+            diffFields,
+            originalData: pc?.originalData,
+            proposedData: pc?.proposedData,
+            nodeId: pc?.nodeId,
+            modalTitle: pc?.modalTitle,
+            // Dados adicionais para a retomada no cliente
+            correlationId,
           },
         });
       }
     }
 
+    // 🔧 pending_execute -> EXECUTE_ACTION (faz a ponte do estado do grafo para a UI)
+    if (
+      (realState as any).pending_execute &&
+      !finalSideEffects.some((e) => e.type === "EXECUTE_ACTION")
+    ) {
+      const pe = (realState as any).pending_execute; // { tool_name, parameters, nodeId, ... }
+      finalSideEffects.push({
+        type: "EXECUTE_ACTION",
+        payload: {
+          ...pe,
+          feedbackMessage:
+            pe?.tool_name === "problem.update"
+              ? "✅ Título atualizado!"
+              : "✅ Ação aprovada e executada.",
+        },
+      });
+    }
+
     if (realState.response && finalSideEffects.length === 0) {
+      consola.info(
+        "[agentChat] Adicionando POST_MESSAGE por ausência de sideEffects."
+      );
       finalSideEffects.push({
         type: "POST_MESSAGE",
         payload: { text: realState.response },
@@ -148,7 +299,11 @@ export default defineEventHandler(
     }
 
     consola.info(
-      "[agentChat] Final SideEffects enviados ao frontend:",
+      "[agentChat] Final SideEffects – resumo:",
+      finalSideEffects.map((s) => ({ type: s.type }))
+    );
+    consola.debug(
+      "[agentChat] Final SideEffects – payload completo:",
       finalSideEffects
     );
     consola.info("[agentChat] === Request FINALIZADO ===");

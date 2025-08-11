@@ -11,17 +11,21 @@
         <ProblemIcon class="w-8 h-8 shrink-0" />
         <span class="text-base font-semibold text-white">
           {{
-            modalTitle || (diffMode ? "Revisar Alteração" : "Editar Problema")
+            props.modalTitle ||
+            (isDiffMode ? "Revisar Alteração" : "Editar Problema")
           }}
         </span>
       </div>
     </template>
+    <p v-if="isDiffMode && props.message" class="text-sm text-gray-400 px-6">
+      {{ props.message }}
+    </p>
     <div class="p-6 space-y-4">
       <!-- Título -->
       <div>
         <label class="block font-semibold mb-1 text-gray-300">Título</label>
         <div
-          v-if="diffMode"
+          v-if="isDiffMode"
           v-html="titleDiffHtml"
           class="diff-view bg-[#1a1a1a] rounded p-3 font-mono border border-[#333333] min-h-[40px] prose-sm prose-invert"
         ></div>
@@ -38,7 +42,7 @@
       <div>
         <label class="block font-semibold mb-1 text-gray-300">Descrição</label>
         <div
-          v-if="diffMode"
+          v-if="isDiffMode"
           v-html="descriptionDiffHtml"
           class="diff-view bg-[#1a1a1a] rounded p-3 font-mono border border-[#333333] min-h-[100px] prose prose-invert max-w-none prose-sm"
         ></div>
@@ -57,8 +61,12 @@
       <div
         class="flex justify-end gap-3 px-6 py-4 bg-[#232227] rounded-b-lg border-t border-t-[#393939]"
       >
-        <button class="btn btn-ghost" @click="onCancel">Cancelar</button>
-        <button class="btn btn-primary" @click="onConfirm">Confirmar</button>
+        <button class="btn btn-ghost" @click="onCancel">
+          {{ props.cancelLabel || "Cancelar" }}
+        </button>
+        <button class="btn btn-primary" @click="onConfirm">
+          {{ props.confirmLabel || "Confirmar" }}
+        </button>
       </div>
     </template>
   </BaseModal>
@@ -70,6 +78,8 @@ import { ref, computed, watch } from "vue";
 import BaseModal from "./BaseModal.vue";
 import { diffWords } from "diff";
 
+defineOptions({ inheritAttrs: false });
+
 const props = defineProps<{
   open?: boolean;
   isOpen?: boolean;
@@ -78,6 +88,14 @@ const props = defineProps<{
   diffMode?: boolean;
   modalTitle?: string;
   actionToConfirm?: any;
+  mode?: "confirm" | "edit";
+  confirmLabel?: string;
+  cancelLabel?: string;
+  message?: string;
+  nodeId?: string;
+  diffFields?: string[];
+  confirmFn?: () => void | Promise<void>;
+  cancelFn?: () => void | Promise<void>;
 }>();
 
 const emit = defineEmits(["confirm", "close"]);
@@ -85,18 +103,22 @@ const emit = defineEmits(["confirm", "close"]);
 const localTitle = ref("");
 const localDescription = ref("");
 
+const isDiffMode = computed(
+  () => props.mode === "confirm" || props.diffMode === true
+);
+
 // Sempre que o modal abre ou originalData muda, atualiza o estado local,
 // exceto em diffMode (onde os campos não são editáveis e exibem apenas o diff)
 watch(
-  () => [props.isOpen ?? props.open, props.originalData, props.diffMode],
-  ([isOpen, newOriginalData, diffMode]) => {
+  () => [props.isOpen ?? props.open, props.originalData, isDiffMode.value],
+  ([isOpen, newOriginalData, isDiff]) => {
     console.log(
       "[ProblemModal] Watcher acionado: { open, originalData, diffMode } = ",
       isOpen,
       newOriginalData,
-      diffMode
+      isDiff
     );
-    if (isOpen && !diffMode) {
+    if (isOpen && !isDiff) {
       localTitle.value =
         typeof newOriginalData === "object" &&
         newOriginalData !== null &&
@@ -113,7 +135,7 @@ watch(
         localTitle: localTitle.value,
         localDescription: localDescription.value,
       });
-    } else if (isOpen && diffMode) {
+    } else if (isOpen && isDiff) {
       console.log(
         "[ProblemModal] Está em diffMode: campos locais NÃO foram alterados."
       );
@@ -137,7 +159,7 @@ function createDiffHtml(oldStr: string, newStr: string): string {
 }
 
 const titleDiffHtml = computed(() =>
-  props.diffMode
+  isDiffMode.value
     ? createDiffHtml(
         props.originalData?.title || "",
         props.proposedData?.title || ""
@@ -146,7 +168,7 @@ const titleDiffHtml = computed(() =>
 );
 
 const descriptionDiffHtml = computed(() =>
-  props.diffMode
+  isDiffMode.value
     ? createDiffHtml(
         props.originalData?.description || "",
         props.proposedData?.description || ""
@@ -154,21 +176,44 @@ const descriptionDiffHtml = computed(() =>
     : ""
 );
 
-function onConfirm() {
+async function onConfirm() {
   console.log("[ProblemModal] onConfirm() chamado!");
   console.log("[ProblemModal] Botão Confirmar clicado", {
-    diffMode: props.diffMode,
+    diffMode: isDiffMode.value,
     actionToConfirm: props.actionToConfirm,
     localTitle: localTitle.value,
     localDescription: localDescription.value,
   });
-  if (props.diffMode && props.actionToConfirm) {
-    console.log(
-      "[ProblemModal] Emitindo confirmação para fluxo AGENTE",
-      props.actionToConfirm
-    );
-    emit("confirm", props.actionToConfirm);
-  } else if (!props.diffMode) {
+
+  if (isDiffMode.value) {
+    // Prioridade: fluxo do AGENTE com ação proposta
+    if (props.actionToConfirm) {
+      // Garante que a execução será aplicada (após aprovação) pelo tool
+      const normalized = {
+        ...props.actionToConfirm,
+        parameters: {
+          ...(props.actionToConfirm as any)?.parameters,
+          isApprovedUpdate: true,
+        },
+      };
+      console.log(
+        "[ProblemModal] Emitindo confirmação VISUAL com isApprovedUpdate=true",
+        normalized
+      );
+      emit("confirm", normalized);
+      // Fecha o modal após confirmar
+      emit("close");
+      return;
+    }
+
+    // Alternativa: callback customizado (se existir)
+    if (typeof props.confirmFn === "function") {
+      await props.confirmFn();
+      emit("close");
+      return;
+    }
+  } else {
+    // Modo edição manual (não-diff)
     console.log("[ProblemModal] Emitindo confirmação para edição MANUAL", {
       title: localTitle.value,
       description: localDescription.value,
@@ -177,10 +222,16 @@ function onConfirm() {
       title: localTitle.value,
       description: localDescription.value,
     });
+    emit("close");
+    return;
   }
 }
 
-function onCancel() {
+async function onCancel() {
+  if (typeof props.cancelFn === "function") {
+    await props.cancelFn();
+    return;
+  }
   emit("close");
 }
 </script>

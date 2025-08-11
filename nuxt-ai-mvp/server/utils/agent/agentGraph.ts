@@ -1,5 +1,3 @@
-// server/utils/agent/agentGraph.ts
-
 import { StateGraph, END, START } from "@langchain/langgraph";
 import { PlanExecuteAnnotation, type PlanExecuteState } from "./graphState";
 import { agentNode } from "./nodes/agentNode";
@@ -70,5 +68,13 @@ workflow.addConditionalEdges("tools" as any, afterToolsRouter, {
 workflow.addEdge("chat" as any, END);
 
 export const getAgentGraph = (checkpointer: any) => {
-  return workflow.compile({ checkpointer });
+  return workflow.compile({ checkpointer }) as ReturnType<
+    typeof workflow.compile
+  > & {
+    resume: (
+      correlationId: string,
+      payload: any,
+      config?: Record<string, any>
+    ) => Promise<any>;
+  };
 };

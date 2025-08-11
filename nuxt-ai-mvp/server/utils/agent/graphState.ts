@@ -64,6 +64,7 @@ export interface PlanExecuteState {
   pending_execute?: {
     tool_name: string;
     parameters: any;
+    nodeId?: string;
   } | null;
   last_tool_result?: any;
   next_step?: "agentNode" | "chatNode" | "__end__";
@@ -134,7 +135,11 @@ export const PlanExecuteAnnotation = Annotation.Root({
     ) => newValue ?? null,
     default: () => null,
   }),
-  pending_execute: Annotation<{ tool_name: string; parameters: any } | null>({
+  pending_execute: Annotation<{
+    tool_name: string;
+    parameters: any;
+    nodeId?: string;
+  } | null>({
     reducer: (
       _current: { tool_name: string; parameters: any } | null,
       incoming: { tool_name: string; parameters: any } | null

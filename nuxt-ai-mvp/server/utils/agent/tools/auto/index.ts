@@ -31,5 +31,45 @@ export const autoTools = [
     approvalStyle: undefined,
     executionMode: "backend",
     promptPath: undefined
+  },
+  {
+    id: "analysis.create",
+    nodeType: "analysis",
+    action: "create",
+    langchainTool: "createNode",
+    needsApproval: false,
+    approvalStyle: undefined,
+    executionMode: "backend",
+    promptPath: undefined
+  },
+  {
+    id: "analysis.delete",
+    nodeType: "analysis",
+    action: "delete",
+    langchainTool: "deleteNode",
+    needsApproval: false,
+    approvalStyle: undefined,
+    executionMode: "backend",
+    promptPath: undefined
+  },
+  {
+    id: "survey.create",
+    nodeType: "survey",
+    action: "create",
+    langchainTool: "createNode",
+    needsApproval: false,
+    approvalStyle: undefined,
+    executionMode: "backend",
+    promptPath: undefined
+  },
+  {
+    id: "survey.delete",
+    nodeType: "survey",
+    action: "delete",
+    langchainTool: "deleteNode",
+    needsApproval: true,
+    approvalStyle: "text",
+    executionMode: "backend",
+    promptPath: undefined
   }
 ] as const;

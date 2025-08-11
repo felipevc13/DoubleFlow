@@ -12,6 +12,7 @@ import { useRoute, useRouter } from "vue-router";
 import { modalComponents } from "~/lib/modalMapping";
 
 const router = useRouter();
+const route = useRoute();
 
 const showSideNav = computed(() => {
   // Esconde o SideNav se o layout da página for 'blank'
@@ -30,7 +31,6 @@ const sidebarStore = useSidebarStore();
 const modalStore = useModalStore();
 const taskFlowStore = useTaskFlowStore();
 const sidenavStore = useSidenavStore();
-const route = useRoute();
 
 // Log the initial value and watch for changes
 
@@ -101,14 +101,23 @@ const modalProps = computed(() => {
 
   // --- DIFF MODE (Agent-triggered review) ---
   if (modalDataValue?.diffMode) {
+    const md = { ...(modalDataValue || {}) };
+    // Normaliza nomes legados que o Vue trata como listeners
+    if ("onConfirm" in md) {
+      md.confirmFn = md.onConfirm;
+      delete md.onConfirm;
+    }
+    if ("onCancel" in md) {
+      md.cancelFn = md.onCancel;
+      delete md.onCancel;
+    }
+
     return {
       isOpen: true,
+      ...md, // mantém confirmFn, cancelFn, actionToConfirm, etc.
+      mode: "confirm",
       diffMode: true,
-      originalData: modalDataValue.originalData,
-      proposedData: modalDataValue.proposedData,
-      diffFields: modalDataValue.diffFields,
-      modalTitle: modalDataValue.modalTitle,
-      actionToConfirm: modalDataValue.actionToConfirm,
+      nodeId: modalStore.getActiveNodeId || md.nodeId,
     };
   }
 
@@ -172,7 +181,11 @@ const modalProps = computed(() => {
   // For all node-editing modals, pass the node data in a consistent way
   return {
     isOpen: true,
-    nodeData: reactiveNode.data,
+    nodeId: activeNodeId,
+    // ProblemModal (e similares) esperam originalData em modo de edição manual
+    originalData: reactiveNode.data,
+    mode: "edit",
+    ...(modalDataValue || {}),
   };
 });
 
@@ -192,32 +205,40 @@ const modalEventHandlers = computed(() => {
 
   // For node-editing modals (Problem, DataSource, Survey, etc.)
   if (type && type !== "taskForm" && type !== "confirmDelete") {
-    return {
+    const isDiff = !!modalStore.getModalData?.diffMode;
+
+    const baseHandlers = {
       // Handle confirmation from the modal
-      confirm: (payload) => {
-        console.log(
-          `[App.vue] Received confirmation from ${type} modal:`,
-          payload
-        );
+      confirm: async (payload) => {
+        console.log("[App.vue] raw payload received from modal:", payload);
+        console.log(`[App.vue] confirm from ${type}:`, payload);
 
-        // Check if this is an agent action confirmation (diff mode)
-        if (payload?.tool_name) {
-          agentLogic.handleModalConfirmation(payload);
-        }
-        // Handle manual edit mode
-        else {
-          const nodeId = modalStore.getActiveNodeId;
-          if (!nodeId) {
-            console.error(
-              "[App.vue] Cannot save: No active node ID in modalStore"
-            );
-            return;
-          }
-          // Update the node data in the store
-          taskFlowStore.updateNodeData(nodeId, payload);
+        // Detecta ação do agente (direta ou embrulhada em { action })
+        const agentAction = payload?.tool_name
+          ? payload
+          : payload?.action?.tool_name
+          ? payload.action
+          : null;
+
+        // Se o modal foi aberto como diff visual, prioriza o caminho do agente
+        if (agentAction || isDiff) {
+          const fallbackAction = modalStore.getModalData?.actionToConfirm;
+          const action = agentAction ?? payload ?? fallbackAction;
+          console.log("[App.vue] using action from store:", action);
+          await agentLogic.handleModalConfirmation(action);
+          modalStore.closeModal();
+          return;
         }
 
-        // Close the modal after handling the confirmation
+        // --- Fluxo manual (edição direta) ---
+        const nodeId = modalStore.getActiveNodeId;
+        if (!nodeId) {
+          console.error(
+            "[App.vue] Cannot save: No active node ID in modalStore"
+          );
+          return;
+        }
+        taskFlowStore.updateNodeData(nodeId, payload);
         modalStore.closeModal();
       },
 
@@ -225,15 +246,19 @@ const modalEventHandlers = computed(() => {
       close: () => {
         modalStore.closeModal();
       },
+    };
 
-      // Handle update events (for multi-step modals or real-time updates)
-      update: (updatedData) => {
+    // Only include `update` for modals que realmente emitem update (ex.: analysis) e quando NÃO é diff
+    if (type === "analysis" && !isDiff) {
+      baseHandlers["update:nodeData"] = (updatedData) => {
         const nodeId = modalStore.getActiveNodeId;
         if (nodeId) {
           taskFlowStore.updateNodeData(nodeId, updatedData);
         }
-      },
-    };
+      };
+    }
+
+    return baseHandlers;
   }
 
   // For other modals or if no specific handler is needed
@@ -381,7 +406,6 @@ const overlayStyle = computed(() => {
               : {}),
           }"
           @close="handleModalClose"
-          @update:nodeData="handleModalUpdate"
           v-on="modalEventHandlers"
         />
       </div>

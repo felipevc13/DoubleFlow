@@ -2087,6 +2087,9 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
         (node: TaskFlowNode) => node.position
       );
 
+    // Reset flags for a fresh start of a NEW flow (not coming from loadTaskFlow)
+    isTransitioning.value = false;
+
     if (nodes.value.length === 0) {
       if (initialProblem) {
         loadNodesAndEdgesFromProblemStatement(initialProblem);
@@ -2094,7 +2097,19 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
         initializeProblemNode();
       }
     }
+
     currentTaskId.value = taskId;
+
+    // IMPORTANT: mark as initial load complete so saveTaskFlow doesn't early-return
+    isInitialLoadComplete.value = true;
+
+    // Persist immediately so the new task gets a task_flow row and avoids a black canvas
+    saveFlowDebounced({
+      taskId: currentTaskId.value!,
+      nodes: nodes.value,
+      edges: edges.value,
+      viewport: viewport.value,
+    });
   };
 
   /**

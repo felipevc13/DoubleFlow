@@ -41,15 +41,20 @@
           <div
             v-else
             :class="[
-              'prose prose-invert max-w-[75%] break-words text-base',
+              'prose prose-invert max-w-[75%] break-words text-base relative',
               msg.role === 'user'
-                ? 'bg-blue-600 text-white rounded-2xl px-5 py-3 shadow ml-auto'
+                ? 'bg-[#23232A] text-white rounded-2xl px-5  shadow'
                 : msg.role === 'agent'
-                ? 'bg-[#23232A] text-white rounded-2xl px-5 py-3 shadow'
+                ? 'bg-transparent text-white rounded-2xl px-5 py-3 shadow'
                 : 'bg-red-900 text-white rounded-2xl px-5 py-3 shadow',
             ]"
-            v-html="renderMarkdown(msg.content)"
-          />
+          >
+            <div v-html="renderMarkdown(msg.content)" />
+            <span
+              v-if="msg.role === 'user'"
+              class="absolute right-[-6px] top-3 w-3 h-3 bg-[#23232A] rotate-45"
+            ></span>
+          </div>
         </div>
         <div v-if="isLoading" class="flex justify-start">
           <div class="bg-[#23232A] rounded-2xl px-5 py-3 shadow">

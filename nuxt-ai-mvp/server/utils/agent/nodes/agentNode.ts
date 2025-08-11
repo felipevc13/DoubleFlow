@@ -53,12 +53,47 @@ export async function agentNode(
   // ... (o resto do arquivo `agentNode` permanece o mesmo) ...
 
   // Rota 2: Se a intenção é uma chamada de ferramenta (criar, deletar, etc.)
+  // 🚧 Política: nó "problem" não pode ser criado nem deletado
+  if (
+    target?.type === "problem" &&
+    (action === "create" || action === "delete")
+  ) {
+    return {
+      sideEffects: [
+        {
+          type: "POST_MESSAGE",
+          payload: {
+            text: "❌ Ação inválida: o nó 'problema' não pode ser criado nem removido.",
+          },
+        },
+      ],
+      // mantém fluxo no chat para novas instruções
+      next_step: "chatNode" as any,
+    };
+  }
   const actionId = `${target?.type}.${action}`;
   const meta = toolLookup[actionId];
 
   if (meta) {
+    // Preenchimento básico de parâmetros quando o classificador não forneceu ids
+    const lastNode = state.canvasContext?.nodes?.at?.(-1);
+    const problemId = state.canvasContext?.problem_statement?.id;
+    const filledArgs = { ...(args || {}) };
+    if (action === "create") {
+      if (filledArgs.sourceNodeId === undefined) {
+        filledArgs.sourceNodeId = lastNode?.id ?? problemId ?? undefined;
+      }
+    } else if (action === "delete" || action === "update") {
+      if (!filledArgs.nodeId) {
+        const lastOfType = state.canvasContext?.nodes
+          ?.slice()
+          ?.reverse()
+          ?.find((n: any) => n.type === target?.type);
+        if (lastOfType) filledArgs.nodeId = lastOfType.id;
+      }
+    }
     const completeParameters = {
-      ...(args || {}),
+      ...filledArgs,
       taskId: state.taskId,
       nodeId: target?.id,
       canvasContext: state.canvasContext,
