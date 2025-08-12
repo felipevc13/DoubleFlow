@@ -117,8 +117,8 @@
             <Background
               pattern-color="#393939"
               color="#393939"
-              gap="40"
-              size="3"
+              :gap="40"
+              :size="3"
             />
             <Controls :show-interactive="false" />
             <EdgeLabelRenderer>
@@ -188,7 +188,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 // Ativa debug global do VueFlow (devtools)
 // Ativa debug global do VueFlow (devtools) - Desativar em produção
 window.VUE_FLOW_DEVTOOLS = true;
@@ -203,6 +203,7 @@ import {
   shallowRef,
   markRaw,
 } from "vue";
+import type { PropType } from "vue";
 import { storeToRefs } from "pinia";
 import {
   VueFlow,
@@ -237,9 +238,36 @@ import { until } from "@vueuse/core";
 import { useAnimatedFitToNode } from "~/composables/useAnimatedFitToNode";
 import IAIcon from "./icon/IAIcon.vue";
 
+// ---- Type-only imports ----
+import type {
+  Connection,
+  NodeComponent,
+  NodeTypesObject,
+} from "@vue-flow/core";
+
+// ---- Augment global Window for TS ----
+declare global {
+  interface Window {
+    VUE_FLOW_DEVTOOLS?: boolean;
+    $vueFlow?: any;
+    $vueFlowReady?: boolean;
+    $vueFlowZoom?: any;
+    $vueFlowPan?: any;
+    $piniaTaskFlowStore?: any;
+  }
+}
+
+// ---- Types for props ----
+type InitialProblem = {
+  title: string;
+  description: string;
+  updated_at: string;
+};
+
 const props = defineProps({
   initialProblem: {
-    type: Object,
+    type: Object as PropType<InitialProblem>,
+    required: false,
     default: () => ({
       title: "",
       description: "",
@@ -255,7 +283,7 @@ const { updateNodeInternals } = useVueFlow();
 // Garante que ao criar a primeira task (ProblemCard), o handle + é atualizado corretamente
 const taskFlowStore = useTaskFlowStore();
 const { nodeToAnimateTo } = storeToRefs(taskFlowStore);
-const vueFlowRef = ref(null); // holds the VueFlow instance
+const vueFlowRef = ref<any>(null); // VueFlow instance (typed as any for now)
 // Função de animação (usa o vueFlowRef para caminho rápido)
 const { animateToNode } = useAnimatedFitToNode(vueFlowRef);
 
@@ -265,7 +293,7 @@ import { useTasksStore } from "~/stores/tasks"; // ajuste conforme o nome corret
 
 const supabase = useSupabaseClient();
 const tasksStore = useTasksStore();
-const initialNodeCreated = ref(false);
+const initialNodeCreated = ref<boolean>(false);
 
 watch(nodeToAnimateTo, async (newNodeId) => {
   if (newNodeId) {
@@ -324,13 +352,13 @@ watchEffect(async () => {
       };
 
       if (taskFlowStore.currentTaskId) {
-        await taskFlowStore.addNode(problemNode);
+        await taskFlowStore.addNode(problemNode as any);
       } else {
         const stop = watch(
           () => taskFlowStore.currentTaskId,
           (id) => {
             if (id) {
-              taskFlowStore.addNode(problemNode);
+              taskFlowStore.addNode(problemNode as any);
               stop();
             }
           },
@@ -359,8 +387,10 @@ const directParentIdsMap = computed(() => {
   return parentMap;
 });
 
-const getDirectParentIds = (nodeId) => {
-  return directParentIdsMap.value.get(nodeId) || new Set();
+const getDirectParentIds = (nodeId: string): Set<string> => {
+  return (
+    (directParentIdsMap.value.get(nodeId) as Set<string>) || new Set<string>()
+  );
 };
 
 // ---- [EXPOSE VUEFLOW INSTANCE AND $vueFlowReady FOR E2E TESTS] ----
@@ -372,12 +402,12 @@ const {
   handleNodeUnselect: nodeActionsHandleNodeUnselect,
 } = useNodeActions();
 
-const emit = defineEmits([
-  "rename",
-  "delete",
-  "node-clicked",
-  "update-problem",
-]);
+const emit = defineEmits<{
+  (e: "rename"): void;
+  (e: "delete"): void;
+  (e: "node-clicked", nodeId: string): void;
+  (e: "update-problem", payload: unknown): void;
+}>();
 
 const flowId = "task-flow";
 if (process.client) {
@@ -387,7 +417,7 @@ const sidebarStore = useSidebarStore();
 const sidenavStore = useSidenavStore();
 const modalStore = useModalStore();
 const { nodes, edges, viewport } = storeToRefs(taskFlowStore);
-const isFlowReady = ref(false);
+const isFlowReady = ref<boolean>(false);
 
 // Novo watcher: executa updateNodeInternals/fitView quando flow está pronto e ProblemCard é o único node
 watch(
@@ -406,14 +436,14 @@ watch(
     }
   }
 );
-const hasSavedViewport = ref(false);
-const loadingNodes = ref([]);
-const lastClickedNodeId = ref(null);
-const lastClickedEdgeId = ref(null);
-const flowContainerRef = ref(null); // Template ref for the container
+const hasSavedViewport = ref<boolean>(false);
+const loadingNodes = ref<string[]>([]);
+const lastClickedNodeId = ref<string | null>(null);
+const lastClickedEdgeId = ref<string | null>(null);
+const flowContainerRef = ref<HTMLElement | null>(null); // Template ref for the container
 // (vueFlowRef already declared above)
 
-function onFlowInit(instance) {
+function onFlowInit(instance: any) {
   console.log(
     "✅ [TaskFlow.vue] onFlowInit foi disparado. Instância:",
     instance
@@ -425,13 +455,29 @@ function onFlowInit(instance) {
   taskFlowStore.setVueFlowInstance(instance);
 
   // Manter o viewport da store sincronizado para lógicas de clamp, etc.
-  instance.on("viewport-update", (vp) => {
-    taskFlowStore.updateViewportAndSave(vp);
-  });
+  instance.on(
+    "viewport-update",
+    (vp: { x: number; y: number; zoom: number }) => {
+      const dims = instance?.viewport?.dimensions || { width: 0, height: 0 };
+      taskFlowStore.updateViewportAndSave({
+        ...vp,
+        width: dims.width,
+        height: dims.height,
+      } as any);
+    }
+  );
 
-  instance.on("move-end", (event) => {
-    if (event?.viewport) {
-      taskFlowStore.updateViewportAndSave(event.viewport);
+  instance.on("move-end", (event: any) => {
+    const vp = event?.viewport as
+      | { x: number; y: number; zoom: number }
+      | undefined;
+    if (vp) {
+      const dims = instance?.viewport?.dimensions || { width: 0, height: 0 };
+      taskFlowStore.updateViewportAndSave({
+        ...vp,
+        width: dims.width,
+        height: dims.height,
+      } as any);
     }
   });
 }
@@ -445,11 +491,11 @@ onUnmounted(() => {
   }
 });
 
-const nodeTypes = shallowRef({
-  problem: markRaw(ProblemCard),
-  dataSource: markRaw(DataSourceCard),
-  survey: markRaw(SurveyCard),
-  analysis: markRaw(AnalysisCard),
+const nodeTypes = shallowRef<NodeTypesObject>({
+  problem: markRaw(ProblemCard) as unknown as NodeComponent,
+  dataSource: markRaw(DataSourceCard) as unknown as NodeComponent,
+  survey: markRaw(SurveyCard) as unknown as NodeComponent,
+  analysis: markRaw(AnalysisCard) as unknown as NodeComponent,
 });
 
 // DEBUG: Log edges e nodes enviados ao Vue Flow em tempo real
@@ -474,31 +520,12 @@ const {
   setViewport,
   nodes: vueFlowNodes,
   edges: vueFlowEdges,
-  findSelectedNodes,
-  findSelectedEdges,
   removeNodes,
   removeEdges,
   findNode,
   getSelectedNodes,
   project,
-} = useVueFlow(flowId, {
-  defaultViewport: { x: 0, y: 0, zoom: 1 },
-  minZoom: 0.2,
-  maxZoom: 4,
-  panOnScroll: true,
-  zoomOnDoubleClick: true,
-  snapToGrid: true,
-  snapGrid: [15, 15],
-  defaultEdgeOptions: { type: "smoothstep", animated: false },
-  defaultNodeOptions: {
-    draggable: true,
-    connectable: true,
-    selectable: true,
-    deletable: true,
-  },
-  fitViewOnInit: true,
-  fitViewOptions: { padding: 2, duration: 200 },
-});
+} = useVueFlow(flowId);
 
 const layoutClass = computed(() => ({
   "ml-[72px]": sidenavStore.isCollapsed,
@@ -578,13 +605,19 @@ watch(
   { immediate: true }
 );
 
-const onViewportChange = (viewport) => {
+const onViewportChange = (viewport: { x: number; y: number; zoom: number }) => {
   if (!viewport) return;
-  taskFlowStore.updateViewport({
+  const dims = (vueFlowRef.value as any)?.viewport?.dimensions || {
+    width: 0,
+    height: 0,
+  };
+  taskFlowStore.updateViewportAndSave({
     x: Number.isFinite(viewport.x) ? viewport.x : 0,
     y: Number.isFinite(viewport.y) ? viewport.y : 0,
     zoom: Number.isFinite(viewport.zoom) ? viewport.zoom : 1,
-  });
+    width: dims.width,
+    height: dims.height,
+  } as any);
 };
 
 // --- Connection Validation Handler ---
@@ -599,7 +632,7 @@ function onConnectEnd() {
   connectionControlStore.lastInteractionWasSimpleClickOnSource = false;
 }
 
-const isValidConnectionHandler = (connection) => {
+const isValidConnectionHandler = (connection: Connection) => {
   // Log detalhado do parâmetro recebido
 
   // --- INÍCIO DA NOVA LÓGICA ---
@@ -666,22 +699,25 @@ const isValidConnectionHandler = (connection) => {
   }
 
   // Suas regras de conexão
-  const isAllowed = connectionRules[sourceType]?.[targetType] === true;
+  const isAllowed =
+    (connectionRules as Record<string, Record<string, boolean>>)[sourceType]?.[
+      targetType
+    ] === true;
 
   return isAllowed;
 };
 // --- End Connection Validation Handler ---
 
 // --- Edge Update Handlers ---
-const onEdgeUpdateStart = (edge) => {
+const onEdgeUpdateStart = (edge: any) => {
   // Potential logic: Store the original edge if needed for revert/comparison
 };
 
-const onEdgeUpdate = ({ edge, connection }) => {
+const onEdgeUpdate = ({ edge, connection }: any) => {
   // Potential logic: Validate the new connection during drag? (might be redundant with isValidConnection)
 };
 
-const onEdgeUpdateEnd = (edge) => {
+const onEdgeUpdateEnd = (edge: any) => {
   if (edge) {
     // If an edge exists, it means the update was successful (new connection made)
     // The `onConnect` handler should have already added the *new* edge.
@@ -695,7 +731,7 @@ const onEdgeUpdateEnd = (edge) => {
 };
 // --- End Edge Update Handlers ---
 
-const onConnect = (params) => {
+const onConnect = (params: Connection) => {
   // --- INÍCIO DOS LOGS DETALHADOS ---
   // Verifica se os campos obrigatórios estão corretos
   if (!params.source || !params.target) {
@@ -733,7 +769,7 @@ const onConnect = (params) => {
 };
 
 // --- Node Click Handler (Handles selection tracking + actions) ---
-const minimalNodeClickHandler = (event) => {
+const minimalNodeClickHandler = (event: { node: any }) => {
   // Fecha qualquer contextual popup aberto ao selecionar um node
   uiStateStore.triggerCloseContextualPopups();
 
@@ -754,7 +790,7 @@ const minimalNodeClickHandler = (event) => {
 };
 
 // --- Minimal Edge Click Handler ---
-const minimalEdgeClickHandler = (event) => {
+const minimalEdgeClickHandler = (event: { edge: { id: string } }) => {
   lastClickedEdgeId.value = event.edge.id; // Store the ID
   lastClickedNodeId.value = null; // Clear node selection when edge is clicked
 };
@@ -772,7 +808,7 @@ const openRenameForm = () => emit("rename");
 const deleteTask = () => emit("delete");
 
 // --- Handler for Node Drag Stop ---
-const onNodeDragStop = async ({ event, nodes: draggedNodes, node }) => {
+const onNodeDragStop = async ({ event, nodes: draggedNodes, node }: any) => {
   // A posição do node já foi atualizada via handleNodesChange
   // Salvamos imediatamente após o drag para garantir sincronização
   taskFlowStore.saveTaskFlow();
@@ -780,12 +816,20 @@ const onNodeDragStop = async ({ event, nodes: draggedNodes, node }) => {
 };
 
 // --- Handler for Viewport Changes (Pan/Zoom) ---
-const handleMoveEnd = async (event) => {
+const handleMoveEnd = async (event: any) => {
   // [DEBUG] Log início do handler
 
-  // Revert to simple save on move end
   if (event) {
-    taskFlowStore.updateViewportAndSave(event);
+    const vp = event as { x: number; y: number; zoom: number };
+    const dims = (vueFlowRef.value as any)?.viewport?.dimensions || {
+      width: 0,
+      height: 0,
+    };
+    taskFlowStore.updateViewportAndSave({
+      ...vp,
+      width: dims.width,
+      height: dims.height,
+    } as any);
   }
 
   await nextTick();
@@ -841,9 +885,9 @@ function handleAddNodeGlobalClick() {
 // --- End Handler ---
 
 // --- Custom handleEditNode for Problem Node ---
-function handleEditNode(nodeId, node) {
+function handleEditNode(nodeId: string, node: any) {
   if (node && node.type === "problem") {
-    sidebarStore.openSidebar("editProblem", node.data, nodeId);
+    (sidebarStore.openSidebar as any)("editProblem", node.data, nodeId);
   } else {
     // fallback to default (emit event or other logic if needed)
     // You may want to call the default behavior for other node types
@@ -887,7 +931,7 @@ const edgeLabelData = computed(() => {
 // --- End computed property ---
 
 // --- Function to request edge deletion ---
-const requestEdgeDeletion = (edgeId) => {
+const requestEdgeDeletion = (edgeId: string) => {
   if (confirm("Tem certeza que deseja excluir esta conexão?")) {
     taskFlowStore.removeEdge(edgeId);
   } else {

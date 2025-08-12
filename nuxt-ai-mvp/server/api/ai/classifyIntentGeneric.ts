@@ -69,7 +69,7 @@ Regras:
 - "action" DEVE ser um dos seguintes: ${allActions.join(", ")}.
 - Se a ação for específica a um nó, inclua "target.type" (por ex.: "problem").
 - Se o usuário mencionar um id de nó, inclua "target.id".
-- Se a ação for "update", TODOS os campos a serem alterados DEVEM estar dentro do objeto "args.newData".
+- Se a ação for "create" ou "update", TODOS os campos de dados DEVEM estar dentro de "args.newData".
 - Se o pedido for para ajudar, refininar ou reescrever conteúdo, defina "refinement": true.
 - Se a solicitação for uma ação direta (create/update/delete) SEM pedido explícito de reescrita ou melhoria, mantenha "refinement": false.
 
@@ -83,10 +83,20 @@ Resposta:
   "refinement": false
 }
 
-Usuário: "apaga o card de survey"
+Usuário: "crie um data source chamado Arquivos de Pesquisa"
 Resposta:
 {
-  "target": { "type": "survey" },
+  "target": { "type": "dataSource" },
+  "action": "create",
+  "args": { "newData": { "title": "Arquivos de Pesquisa", "sources": [] } },
+  "refinement": false
+}
+
+
+Usuário: "apaga este data source"
+Resposta:
+{
+  "target": { "type": "dataSource", "id": "dataSource-42" },
   "action": "delete",
   "args": {},
   "refinement": false
@@ -154,6 +164,11 @@ CANVAS: ${JSON.stringify(canvasContext)}
       actionsRequiringTarget.includes(parsed.action) &&
       !parsed.target?.type
     ) {
+      parsed.action = "chat";
+    }
+
+    // Extra safety: deletar SEM id explícito pode gerar ambiguidade
+    if (parsed.action === "delete" && !parsed.target?.id) {
       parsed.action = "chat";
     }
 

@@ -6,6 +6,7 @@ import { problemDiff, simpleFieldDiff } from "../../../lib/diff";
 // Schemas
 import { ProblemSchema } from "../../schema/problem";
 import { NoteSchema } from "../../schema/note";
+import { DataSourceSchema } from "../../schema/dataSource";
 
 // Repositório (ajuste import p/ seu projeto)
 import {
@@ -263,6 +264,8 @@ function pickSchema(nodeType: string) {
       return ProblemSchema;
     case "note":
       return NoteSchema;
+    case "dataSource":
+      return DataSourceSchema;
     default:
       return null; // registre mais schemas aqui (survey, etc.)
   }
@@ -282,6 +285,8 @@ function buildCreateSummary(nodeType: string, nextData: any) {
   switch (nodeType) {
     case "note":
       return `Criar nota: “${(nextData.text ?? "").slice(0, 40)}”`;
+    case "dataSource":
+      return `Criar data source: “${(nextData.title ?? "").slice(0, 40)}”`;
     default:
       return `Criar ${nodeType}`;
   }
@@ -290,6 +295,11 @@ function buildDeleteSummary(nodeType: string, currentNode: any) {
   switch (nodeType) {
     case "note":
       return `Deletar nota: “${(currentNode?.data?.text ?? "").slice(0, 40)}”`;
+    case "dataSource":
+      return `Deletar data source: “${(currentNode?.data?.title ?? "").slice(
+        0,
+        40
+      )}”`;
     default:
       return `Deletar ${nodeType} (${currentNode?.id})`;
   }
