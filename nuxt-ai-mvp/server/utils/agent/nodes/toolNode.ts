@@ -1,9 +1,6 @@
-// server/utils/agent/nodes/toolNode.ts
-
 import type { PlanExecuteState } from "../graphState";
 import { consola } from "consola";
 import { availableTools } from "~/server/utils/agent-tools";
-import { autoTools } from "~/server/utils/agent/tools/auto";
 import type { SideEffect } from "~/lib/sideEffects";
 import { AIMessage } from "@langchain/core/messages";
 
@@ -35,17 +32,11 @@ export async function toolNode( // Renomeado de executeNode
   const { tool_name } = actionToExecute;
   consola.info(`[toolNode] Executando a ação '${tool_name}'`);
 
-  const meta = autoTools.find((t: any) => t.id === tool_name);
-  if (!meta || !meta.langchainTool) {
-    throw new Error(
-      `Metadados ou langchainTool não encontrados para a ação: ${tool_name}`
-    );
-  }
-
-  const tool = availableTools.find((t) => t.name === meta.langchainTool);
+  const tool = availableTools.find((t) => t.name === tool_name);
   if (!tool) {
+    const names = availableTools.map((t) => t.name).join(", ");
     throw new Error(
-      `Implementação da ferramenta não encontrada: ${meta.langchainTool}`
+      `Implementação da ferramenta não encontrada para '${tool_name}'. Disponíveis: [${names}]`
     );
   }
 
@@ -57,11 +48,53 @@ export async function toolNode( // Renomeado de executeNode
       !!config
     );
 
-    // Executa a ferramenta
-    const result = await (tool as any).invoke(
-      actionToExecute.parameters,
-      config
-    );
+    // Executa a ferramenta (compat: função direta ou LangChain tool)
+    let result: any;
+    if (typeof tool === "function") {
+      // Tool exportada como função (ex.: nodeTool)
+      result = await (tool as any)(actionToExecute.parameters);
+    } else if (tool && typeof (tool as any).invoke === "function") {
+      // LangChain tool com .invoke
+      result = await (tool as any).invoke(actionToExecute.parameters, config);
+    } else if (tool && typeof (tool as any).run === "function") {
+      // Fallback comum
+      result = await (tool as any).run(actionToExecute.parameters);
+    } else {
+      throw new Error(
+        "Tool implementation has no callable signature (function/invoke/run)"
+      );
+    }
+
+    // Se a tool pediu confirmação, primeiro focamos o nó e deixamos o caller abrir o modal
+    if (result?.pending_confirmation) {
+      const nodeIdToFocus = (actionToExecute as any)?.parameters?.nodeId;
+      const focusEffect: SideEffect | null = nodeIdToFocus
+        ? { type: "FOCUS_NODE", payload: { nodeId: nodeIdToFocus } }
+        : null;
+
+      const effectsToPersist: SideEffect[] = [];
+      if (focusEffect) effectsToPersist.push(focusEffect);
+
+      // anexa no state.sideEffects também, mantendo compat com quem lê do estado
+      (state as any).sideEffects = Array.isArray((state as any).sideEffects)
+        ? (state as any).sideEffects
+        : [];
+      (state as any).sideEffects.push(...effectsToPersist);
+
+      const ret: Partial<PlanExecuteState> = {
+        last_tool_result: { pending_confirmation: result.pending_confirmation },
+        pending_confirmation: result.pending_confirmation,
+        sideEffects: effectsToPersist,
+        pending_execute: null,
+        input: "",
+        messages: state.messages || [],
+      };
+      consola.info(
+        "[toolNode] RET (pending_confirmation):",
+        JSON.stringify(ret, null, 2)
+      );
+      return ret;
+    }
 
     // Normaliza side effects vindos do tool (se houver)
     const toolSideEffects: SideEffect[] = Array.isArray(result?.sideEffects)
@@ -76,22 +109,25 @@ export async function toolNode( // Renomeado de executeNode
     // adicionamos um REFETCH como fallback para manter a UI sincronizada.
     const shouldAddRefetchFallback = !!result?.updated && !hasRefetchFromTool;
 
-    const successMessage = `✅ Ação '${tool_name}' concluída!`;
-    const finalMessage = new AIMessage(successMessage);
-
-    // --- Persist side effects in the graph state so the handler can read them ---
-    // Ensure array
-    (state as any).sideEffects = Array.isArray((state as any).sideEffects)
-      ? (state as any).sideEffects
-      : [];
-
+    const didSucceed = result?.updated === true || result?.ok === true;
     const effectsToPersist: SideEffect[] = [
-      { type: "POST_MESSAGE", payload: { text: successMessage } },
+      ...(didSucceed
+        ? ([
+            {
+              type: "POST_MESSAGE",
+              payload: { text: `✅ Ação '${tool_name}' concluída!` },
+            },
+          ] as SideEffect[])
+        : []),
       ...toolSideEffects,
       ...(shouldAddRefetchFallback
         ? ([{ type: "REFETCH_TASK_FLOW", payload: {} }] as SideEffect[])
         : []),
     ];
+
+    (state as any).sideEffects = Array.isArray((state as any).sideEffects)
+      ? (state as any).sideEffects
+      : [];
 
     (state as any).sideEffects.push(...effectsToPersist);
 
@@ -100,7 +136,10 @@ export async function toolNode( // Renomeado de executeNode
       sideEffects: effectsToPersist,
       pending_execute: null,
       input: "",
-      messages: [...(state.messages || []), finalMessage],
+      messages: [
+        ...(state.messages || []),
+        new AIMessage(`✅ Ação '${tool_name}' concluída!`),
+      ],
     };
 
     consola.info("[toolNode] Estado RETORNADO:", JSON.stringify(ret, null, 2));

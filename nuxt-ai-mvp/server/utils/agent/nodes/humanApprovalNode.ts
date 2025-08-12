@@ -5,6 +5,36 @@ import type { PlanExecuteState } from "../graphState";
 import { consola } from "consola";
 import type { SideEffect } from "~/lib/sideEffects";
 
+function buildDiff(currentData: any = {}, newData: any = {}) {
+  const diff: Array<{ field: string; from: any; to: any }> = [];
+  const keys = Object.keys(newData || {});
+  for (const k of keys) {
+    const fromVal = currentData?.[k];
+    const toVal = (newData as any)[k];
+    if (fromVal !== toVal) {
+      diff.push({ field: k, from: fromVal, to: toVal });
+    }
+  }
+  return diff;
+}
+
+function makeSummary(
+  params: any,
+  diff: Array<{ field: string; from: any; to: any }>
+) {
+  try {
+    if (diff?.length) {
+      const titleChange = diff.find((d) => d.field === "title");
+      if (titleChange) return `Título → “${titleChange.to}”`;
+    }
+    const op = params?.operation || "update";
+    const nodeType = params?.nodeType || "node";
+    return `${nodeType}.${op}`;
+  } catch {
+    return "Confirma a alteração?";
+  }
+}
+
 export async function humanApprovalNode(
   state: PlanExecuteState
 ): Promise<Partial<PlanExecuteState>> {
@@ -15,6 +45,34 @@ export async function humanApprovalNode(
 
   const existingMessages = state.messages || [];
   const proposal = (state as any).pending_confirmation;
+
+  // Normalize proposal for alignment with pending_execute, if present
+  const pendingExec = (state as any).pending_execute;
+  let normalizedProposal: any = proposal ? { ...(proposal as any) } : null;
+
+  if (proposal && pendingExec?.parameters) {
+    const execParams = pendingExec.parameters;
+
+    // Find current node data to compute proper diff
+    const nodes: any[] = (state as any)?.canvasContext?.nodes || [];
+    const currentNode = nodes.find((n: any) => n?.id === execParams?.nodeId);
+    const currentData = currentNode?.data || {};
+
+    const diff = buildDiff(currentData, execParams?.newData || {});
+    const correlationId =
+      (state as any).correlationId ||
+      (proposal as any).correlationId ||
+      (pendingExec as any).correlationId;
+
+    normalizedProposal = {
+      render: (proposal as any).render || "modal",
+      parameters: execParams, // ← keep EXACTLY the same params as EXECUTE_ACTION
+      diff, // ← freshly built diff
+      summary: makeSummary(execParams, diff),
+      nodeId: execParams?.nodeId,
+      ...(correlationId ? { correlationId } : {}),
+    };
+  }
 
   // 1) Sem proposta → nada a fazer
   if (!proposal) {
@@ -28,16 +86,17 @@ export async function humanApprovalNode(
   consola.info(
     "[humanApprovalNode] Interrompendo execução para aguardar confirmação do usuário."
   );
+  const toLog = normalizedProposal || proposal;
   consola.debug(
     "[humanApprovalNode] Proposta:",
     JSON.stringify(
       {
-        tool_name: (proposal as any)?.tool_name,
-        nodeId: (proposal as any)?.nodeId,
-        approvalStyle: (proposal as any)?.approvalStyle,
-        diffFields: Array.isArray((proposal as any)?.diffFields)
-          ? (proposal as any).diffFields
-          : undefined,
+        render: (toLog as any)?.render, // "chat" | "modal"
+        summary: (toLog as any)?.summary,
+        hasDiff: Boolean((toLog as any)?.diff),
+        op: (toLog as any)?.parameters?.operation, // create|update|patch|delete
+        nodeType: (toLog as any)?.parameters?.nodeType,
+        nodeId: (toLog as any)?.parameters?.nodeId,
       },
       null,
       2
@@ -45,7 +104,7 @@ export async function humanApprovalNode(
   );
 
   // ⚠️ Padrão correto: Aguardar o resume do client
-  const decision = await interrupt(proposal as any);
+  const decision = await interrupt((normalizedProposal ?? proposal) as any);
 
   consola.info(
     "[humanApprovalNode] Decision recebida na retomada:",
@@ -61,21 +120,67 @@ export async function humanApprovalNode(
     const confirmed = Boolean((decision as any).confirmed);
 
     if (confirmed) {
-      const approved = (decision as any).approved_action || null; // { tool_name, parameters, nodeId }
+      // Use exactly the approved action coming from the client resume (front-end)
+      const approved = (decision as any).approved_action ?? {
+        tool_name: "nodeTool",
+        parameters: (proposal as any)?.parameters ?? {},
+        displayMessage: "Ação aprovada",
+      };
+
+      // Strong safety: log what will actually be executed
+      try {
+        consola.info(
+          "[humanApprovalNode] Using approved action from resume.",
+          JSON.stringify(
+            {
+              tool: approved.tool_name,
+              nodeType: (approved as any)?.parameters?.nodeType,
+              nodeId: (approved as any)?.parameters?.nodeId,
+              operation: (approved as any)?.parameters?.operation,
+              newData: (approved as any)?.parameters?.newData,
+            },
+            null,
+            2
+          )
+        );
+      } catch {}
+
+      const execEffect: SideEffect = {
+        type: "EXECUTE_ACTION",
+        payload: {
+          tool_name: (approved as any).tool_name,
+          parameters: {
+            ...(approved as any).parameters,
+            // Flags used by the client / tool node to mark approval path
+            isApprovedOperation: true,
+            isApprovedUpdate: true,
+          },
+          feedbackMessage:
+            (approved as any).displayMessage || "✅ Problema atualizado.",
+        },
+      } as any;
+
       const ret: Partial<PlanExecuteState> = {
+        // We already scheduled execution via side effect; avoid duplicate runs
         pending_confirmation: null,
-        pending_execute: approved,
+        pending_execute: null,
         sideEffects: [
-          { type: "POST_MESSAGE", payload: { text: "Ação confirmada!" } },
-          { type: "CLOSE_MODAL", payload: {} },
-        ] as SideEffect[],
+          { type: "CLOSE_MODAL", payload: {} } as SideEffect,
+          execEffect,
+          {
+            type: "POST_MESSAGE",
+            payload: { text: "Ação confirmada!" },
+          } as SideEffect,
+        ],
         input: "", // evita reprocessar o input anterior
         messages: existingMessages,
       };
+
       consola.info(
-        "[humanApprovalNode] Confirmado. pending_execute montado:",
-        JSON.stringify(ret.pending_execute, null, 2)
+        "[humanApprovalNode] Confirmado. EXECUTE_ACTION emitido com:",
+        JSON.stringify(execEffect.payload, null, 2)
       );
+
       return ret;
     } else {
       const ret: Partial<PlanExecuteState> = {
@@ -97,5 +202,5 @@ export async function humanApprovalNode(
   consola.warn(
     "[humanApprovalNode] Resume sem shape esperado; mantendo proposta pendente."
   );
-  return { pending_confirmation: proposal };
+  return { pending_confirmation: (normalizedProposal ?? proposal) as any };
 }

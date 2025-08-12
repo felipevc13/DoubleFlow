@@ -24,17 +24,12 @@ const RefetchTaskFlow = z.object({
 export const ShowConfirm = z.object({
   type: z.literal("SHOW_CONFIRMATION"),
   payload: z.object({
-    tool_name: z.string(),
-    displayMessage: z.string(),
-    parameters: z.record(z.any()).optional().default({}),
-    approvalStyle: z.enum(["visual", "text"]).optional(),
-    diffFields: z.array(z.string()).optional(),
-    originalData: z.record(z.any()).optional(),
-    proposedData: z.record(z.any()).optional(),
+    render: z.enum(["chat", "modal"]),
+    summary: z.string(),
+    diff: z.any(),
+    parameters: z.record(z.any()),
     nodeId: z.string().optional(),
-    modalTitle: z.string().optional(),
     correlationId: z.string().optional(),
-    interruptId: z.string().optional(),
   }),
 });
 const ExecuteAction = z.object({
@@ -43,6 +38,7 @@ const ExecuteAction = z.object({
     tool_name: z.string(),
     parameters: z.record(z.any()),
     feedbackMessage: z.string().optional(),
+    correlationId: z.string().optional(),
   }),
 });
 

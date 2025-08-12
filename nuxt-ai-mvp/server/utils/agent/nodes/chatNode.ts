@@ -5,14 +5,15 @@ import {
   type BaseMessage,
 } from "@langchain/core/messages";
 import type { PlanExecuteState } from "../graphState";
+import { GEMINI_15_FLASH, GEMINI_20_FLASH_LITE } from "~/config/aiModels";
 
 const gemini15Flash = new ChatGoogleGenerativeAI({
-  model: "gemini-1.5-flash-latest",
+  model: GEMINI_15_FLASH,
   apiKey: process.env.GEMINI_API_KEY,
   temperature: 0.8,
 });
 const gemini20FlashLite = new ChatGoogleGenerativeAI({
-  model: "gemini-2.0-flash-lite",
+  model: GEMINI_20_FLASH_LITE,
   apiKey: process.env.GEMINI_API_KEY,
   temperature: 0.8,
 });

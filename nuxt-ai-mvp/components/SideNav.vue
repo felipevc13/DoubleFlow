@@ -1,4 +1,3 @@
-<!-- components/SideNav.vue -->
 <template>
   <aside
     :class="[
@@ -82,7 +81,7 @@ import CloseSide from "./icon/CloseSide.vue";
 import OpenSide from "./icon/OpenSide.vue";
 import { BookOpenIcon } from "@heroicons/vue/24/outline";
 import { onMounted } from "vue";
-import { useSupabaseUser } from "#imports";
+import { useSupabaseUser, useSupabaseClient } from "#imports";
 
 const route = useRoute();
 const sidenavStore = useSidenavStore();

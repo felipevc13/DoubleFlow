@@ -1,6 +1,6 @@
 /**
  * Generic intent‑classifier that derives valid node/action pairs
- * directly from the node‑catalog (`server/utils/agent/registry/nodeTypes.json`).
+ * directly from the node‑catalog (`config/nodeTypes-raw`).
  *
  * It replaces the previous enum‑based classifier, so no code changes
  * are needed when new nodes or actions are added to the catalog.
@@ -14,20 +14,20 @@ import { z } from "zod";
 // ------------------------------------------------------------------------------------------------
 // 1. Load catalog and build helper maps
 // ------------------------------------------------------------------------------------------------
-import rawNodeCatalog from "~/server/utils/agent/registry/nodeTypes.json" assert { type: "json" };
-const nodeCatalog = rawNodeCatalog as Record<string, any>;
+import nodeTypesRaw from "~/config/nodeTypes-raw";
+const nodeCatalog = nodeTypesRaw as Record<string, any>;
 
 type Catalog = typeof nodeCatalog;
 
 export const allNodeTypes = Object.keys(nodeCatalog) as (keyof Catalog)[];
 
 export const allActions = allNodeTypes.flatMap((t) =>
-  Object.keys(nodeCatalog[t].actions)
+  Object.keys(nodeCatalog[t].operations)
 );
 
 export const toolLookup: Record<string, any> = allNodeTypes.reduce(
   (acc, type) => {
-    Object.entries(nodeCatalog[type].actions).forEach(([action, spec]) => {
+    Object.entries(nodeCatalog[type].operations).forEach(([action, spec]) => {
       acc[`${type}.${action}`] = {
         ...(typeof spec === "object" && spec !== null ? spec : {}),
         ui: nodeCatalog[type].ui || {},

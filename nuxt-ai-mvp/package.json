@@ -45,6 +45,7 @@
     "daisyui": "^5.0.4",
     "diff": "^8.0.2",
     "dompurify": "^3.2.6",
+    "fast-json-patch": "^3.1.1",
     "js-yaml": "^4.1.0",
     "langchain": "^0.3.29",
     "mammoth": "^1.9.0",

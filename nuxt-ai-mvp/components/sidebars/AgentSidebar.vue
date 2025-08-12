@@ -115,6 +115,7 @@ import OpenRight from "../icon/OpenRight.vue";
 import { useAgentLogic } from "~/composables/useAgentLogic";
 import { marked } from "marked"; // Para renderizar markdown nas respostas
 import ActionConfirmation from "~/components/agent/ActionConfirmation.vue";
+import { useSupabaseUser } from "#imports";
 
 const props = defineProps({
   isOpen: Boolean,
@@ -183,6 +184,7 @@ const bubbleClass = (role) => {
 
 const handleSend = () => {
   if (!userInput.value.trim() || isLoading.value) return;
+  console.log("[AgentSidebar] Sending message:", userInput.value);
   sendMessage(userInput.value);
   userInput.value = "";
 };
@@ -204,6 +206,7 @@ const autoResize = (event) => {
 watch(
   messages,
   async () => {
+    console.log("[AgentSidebar] Messages updated:", messages.value);
     await nextTick();
     if (chatContainer.value) {
       chatContainer.value.scrollTop = chatContainer.value.scrollHeight;

@@ -14,27 +14,20 @@ export interface PlanStep {
   rationale: string; // A justificativa da IA para este passo
 }
 
-// Proposta de ação aguardando confirmação do usuário
+// Proposta de ação aguardando confirmação do usuário (server‑driven)
 export interface ActionProposal {
-  tool_name: string;
-  parameters: any;
-  displayMessage?: string;
-  effects?: SideEffect[];
-  approvalStyle?: string;
-  diffFields?: string[];
-  originalData?: Record<string, any>;
-  proposedData?: Record<string, any>;
-  nodeId?: string;
-  modalTitle?: string;
+  tool_name: string; // normalmente "nodeTool"
+  parameters: any; // payload idempotente para execução
+  render: "chat" | "modal"; // como aprovar
+  summary: string; // resumo curto para UI
+  diff?: any; // estrutura de diff (se houver)
+  effects?: SideEffect[]; // efeitos sugeridos
 }
 
 // O estado unificado para o novo grafo híbrido
 export interface PlanExecuteState {
-  // Metadados da ação (incluindo approvalStyle) definidos pelo roteador
-  action_metadata?: {
-    approvalStyle?: string;
-    [key: string]: any;
-  };
+  // Metadados opcionais adicionados por roteadores (legado/opcional)
+  action_metadata?: Record<string, any>;
   taskId?: string; // Add taskId to the state
   // Entradas Iniciais do Usuário/Sistema
   input: string | object;
@@ -150,9 +143,7 @@ export const PlanExecuteAnnotation = Annotation.Root({
     reducer: (_x: any, y: any) => y,
     default: () => undefined,
   }),
-  action_metadata: Annotation<
-    { approvalStyle?: string; [key: string]: any } | undefined
-  >({
+  action_metadata: Annotation<Record<string, any> | undefined>({
     reducer: (_x, y) => y,
     default: () => undefined,
   }),

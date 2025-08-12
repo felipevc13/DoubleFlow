@@ -79,80 +79,55 @@ export async function agentNode(
     const lastNode = state.canvasContext?.nodes?.at?.(-1);
     const problemId = state.canvasContext?.problem_statement?.id;
     const filledArgs = { ...(args || {}) };
-    if (action === "create") {
-      if (filledArgs.sourceNodeId === undefined) {
-        filledArgs.sourceNodeId = lastNode?.id ?? problemId ?? undefined;
-      }
-    } else if (action === "delete" || action === "update") {
-      if (!filledArgs.nodeId) {
-        const lastOfType = state.canvasContext?.nodes
-          ?.slice()
-          ?.reverse()
-          ?.find((n: any) => n.type === target?.type);
-        if (lastOfType) filledArgs.nodeId = lastOfType.id;
-      }
+
+    // Descobrir nodeId de destino quando não informado (para update/delete)
+    let resolvedNodeId = filledArgs.nodeId ?? target?.id;
+    if (!resolvedNodeId && (action === "update" || action === "delete")) {
+      const lastOfType = state.canvasContext?.nodes
+        ?.slice()
+        ?.reverse()
+        ?.find((n: any) => n.type === target?.type);
+      resolvedNodeId = lastOfType?.id;
     }
-    const completeParameters = {
-      ...filledArgs,
+
+    // Monta parâmetros esperados pelo nodeTool (server‑driven)
+    const parameters: any = {
       taskId: state.taskId,
-      nodeId: target?.id,
-      canvasContext: state.canvasContext,
+      nodeType: target?.type,
+      operation: action, // "create" | "update" | "patch" | "delete"
     };
+
+    if (action === "create") {
+      parameters.newData = filledArgs.newData ?? {};
+      parameters.parentId =
+        filledArgs.sourceNodeId ?? lastNode?.id ?? problemId ?? null;
+    } else if (action === "update") {
+      parameters.nodeId = resolvedNodeId;
+      parameters.newData = filledArgs.newData ?? args?.newData ?? {};
+    } else if (action === "patch") {
+      parameters.nodeId = resolvedNodeId;
+      parameters.patch = filledArgs.patch ?? args?.patch ?? [];
+    } else if (action === "delete") {
+      parameters.nodeId = resolvedNodeId;
+    }
+
+    // 🔗 encaminha contexto atual para o backend (ajuda a montar diff/approval)
+    parameters.canvasContext = state.canvasContext;
 
     const toolCall = {
-      tool_name: actionId,
-      parameters: completeParameters,
+      tool_name: "nodeTool", // 🔑 unificada
+      parameters,
       displayMessage: `A IA propõe: ${actionId}. Você confirma?`,
-      meta: meta,
+      meta,
     };
 
-    const next_step = meta.requiresReplan ? "agentNode" : undefined;
+    // Sempre deixa a aprovação para o servidor (nodeTool)
+    const targetNodeId = parameters.nodeId;
+    const sideEffects = targetNodeId
+      ? generateUiPreparationEffects(state, targetNodeId)
+      : [];
 
-    if (meta.needsApproval) {
-      const targetNodeId = target?.id;
-      const targetNode = targetNodeId
-        ? state.canvasContext?.nodes?.find((n: any) => n.id === targetNodeId)
-        : null;
-
-      let proposal: any;
-
-      // Decisão 100% guiada pela configuração!
-      if (meta.approvalStyle === "visual" && targetNode) {
-        proposal = {
-          tool_name: actionId,
-          parameters: {
-            ...completeParameters,
-            isApprovedUpdate: true,
-          },
-          displayMessage: `A IA propõe as seguintes alterações para '${
-            targetNode.data?.title || targetNodeId
-          }'. Você aprova?`,
-          approvalStyle: "visual",
-          nodeId: targetNodeId,
-          modalTitle: meta.modalTitle || "Revisar Alterações Propostas",
-          originalData: targetNode.data,
-          proposedData: args?.newData ?? {},
-          diffFields: meta.ui?.diffFields || [],
-          meta,
-        };
-      } else {
-        proposal = {
-          tool_name: actionId,
-          parameters: completeParameters,
-          displayMessage: `A IA propõe: ${actionId}. Você confirma?`,
-          approvalStyle: "text",
-          meta,
-        };
-      }
-
-      const sideEffects = targetNodeId
-        ? generateUiPreparationEffects(state, targetNodeId)
-        : [];
-
-      return { sideEffects, pending_confirmation: proposal, next_step };
-    } else {
-      return { pending_execute: toolCall, next_step };
-    }
+    return { sideEffects, pending_execute: toolCall };
   }
 
   // Rota 3: Fallback para Chat

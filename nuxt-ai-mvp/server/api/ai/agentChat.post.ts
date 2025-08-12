@@ -11,6 +11,39 @@ import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { randomUUID } from "crypto";
 import { Command } from "@langchain/langgraph";
 
+// Build a coherent confirmation summary/diff using the actual newData that will be executed
+function computeConfirmation(payload: any) {
+  const params = payload?.parameters ?? {};
+  const nodeId = params?.nodeId;
+  const ctx = params?.canvasContext ?? {};
+  const nodes = Array.isArray(ctx?.nodes) ? ctx.nodes : [];
+  const nodeData = nodes.find((n: any) => n?.id === nodeId)?.data ?? {};
+  const newData = params?.newData ?? {};
+  const diffFields = payload?.meta?.diffFields ?? ["title", "description"]; // fallback
+
+  const diff: Array<{ field: string; from: any; to: any }> = [];
+  for (const f of diffFields) {
+    if (Object.prototype.hasOwnProperty.call(newData, f)) {
+      const fromVal = (nodeData as any)?.[f];
+      const toVal = (newData as any)?.[f];
+      if (fromVal !== toVal) {
+        diff.push({ field: f, from: fromVal, to: toVal });
+      }
+    }
+  }
+
+  // Prefer a meaningful summary for title changes
+  let summary = payload?.summary;
+  if ("title" in newData && nodeData?.title !== newData.title) {
+    summary = `Título → “${newData.title}”`;
+  }
+  if (!summary || typeof summary !== "string") {
+    summary = "Confirme esta ação proposta.";
+  }
+
+  return { summary, diff, parameters: params };
+}
+
 export default defineEventHandler(
   async (
     event
@@ -114,6 +147,57 @@ export default defineEventHandler(
           correlationId,
           resumeValue: resume.value,
         });
+
+        // Se veio confirmação do modal, dispare a execução diretamente
+        const { confirmed, approved_action } = (resume.value as any) || {};
+        if (
+          confirmed &&
+          approved_action?.tool_name &&
+          approved_action?.parameters
+        ) {
+          consola.info(
+            "[agentChat] RESUME com confirmação recebida. Disparando EXECUTE_ACTION direto do servidor."
+          );
+
+          // Normaliza/garante flags de aprovação para a tool não pedir confirmação de novo
+          const normalizedParams = {
+            ...approved_action.parameters,
+            isApprovedUpdate: true,
+            isApprovedOperation: true,
+          };
+
+          const nodeId = normalizedParams?.nodeId as string | undefined;
+          const op = normalizedParams?.operation as string | undefined;
+          const ntype = normalizedParams?.nodeType as string | undefined;
+          let feedbackMessage = "✅ Ação aprovada e executada.";
+          if (ntype === "problem" && (op === "update" || op === "patch")) {
+            feedbackMessage = "✅ Problema atualizado.";
+          }
+
+          const immediateEffects: SideEffect[] = [];
+          if (nodeId) {
+            immediateEffects.push({
+              type: "FOCUS_NODE",
+              payload: { nodeId },
+            } as any);
+          }
+          immediateEffects.push({
+            type: "EXECUTE_ACTION",
+            payload: {
+              tool_name: approved_action.tool_name,
+              parameters: normalizedParams,
+              feedbackMessage,
+              correlationId,
+            },
+          } as any);
+
+          consola.info(
+            "[agentChat] RESUME: retornando sideEffects imediatos (EXECUTE_ACTION)"
+          );
+          return { sideEffects: immediateEffects, correlationId };
+        }
+
+        // Caso não seja um resume de confirmação, usamos o mecanismo padrão do LangGraph
         consola.info(
           "[agentChat] Retomando execução via Command({ resume }) com correlationId:",
           correlationId
@@ -231,61 +315,69 @@ export default defineEventHandler(
       consola.info(
         "[agentChat] pending_confirmation detectado. Preparando SHOW_CONFIRMATION."
       );
-      if (
-        !finalSideEffects.some((effect) => effect.type === "SHOW_CONFIRMATION")
-      ) {
-        consola.debug(
-          "[agentChat] Conteúdo de pending_confirmation:",
-          realState.pending_confirmation
-        );
-
+      if (!finalSideEffects.some((e) => e.type === "SHOW_CONFIRMATION")) {
         const pc: any = realState.pending_confirmation;
-        const approvalStyle: "text" | "visual" | undefined =
-          pc?.approvalStyle === "visual"
-            ? "visual"
-            : pc?.approvalStyle === "text"
-            ? "text"
-            : undefined;
-        const diffFields: string[] | undefined = Array.isArray(pc?.diffFields)
-          ? pc.diffFields.filter((f: any) => typeof f === "string")
-          : undefined;
+        const pe: any = (realState as any).pending_execute;
+        consola.debug("[agentChat] pending_confirmation payload:", pc);
+
+        // Prefer the pending_execute parameters as the source of truth when present
+        const source = pe && pe.parameters ? pe : pc;
+        const render: "chat" | "modal" =
+          pc?.render === "modal" || source?.approvalRender === "modal"
+            ? "modal"
+            : "chat";
+
+        const built = computeConfirmation(source);
+        const parameters = built.parameters ?? {};
+        const nodeId = parameters?.nodeId ?? undefined;
 
         finalSideEffects.push({
           type: "SHOW_CONFIRMATION",
           payload: {
-            tool_name: pc?.tool_name,
-            parameters: pc?.parameters,
-            displayMessage:
-              pc?.displayMessage || "Confirme esta ação proposta.",
-            approvalStyle,
-            diffFields,
-            originalData: pc?.originalData,
-            proposedData: pc?.proposedData,
-            nodeId: pc?.nodeId,
-            modalTitle: pc?.modalTitle,
-            // Dados adicionais para a retomada no cliente
-            correlationId,
+            render, // "chat" | "modal"
+            summary: built.summary, // texto curto para UI
+            diff: built.diff, // estrutura de diff recalculada
+            parameters, // igual ao que será reenviado na aprovação
+            nodeId, // opcional para a UI focar o alvo
+            correlationId, // necessário para retomar o turno interrompido
           },
         });
       }
     }
 
-    // 🔧 pending_execute -> EXECUTE_ACTION (faz a ponte do estado do grafo para a UI)
     if (
       (realState as any).pending_execute &&
       !finalSideEffects.some((e) => e.type === "EXECUTE_ACTION")
     ) {
-      const pe = (realState as any).pending_execute; // { tool_name, parameters, nodeId, ... }
-      finalSideEffects.push({
-        type: "EXECUTE_ACTION",
-        payload: {
-          ...pe,
-          feedbackMessage:
-            pe?.tool_name === "problem.update"
-              ? "✅ Título atualizado!"
-              : "✅ Ação aprovada e executada.",
-        },
-      });
+      const pe = (realState as any).pending_execute; // { tool_name, parameters, meta }
+      const op = pe?.parameters?.operation;
+      const ntype = pe?.parameters?.nodeType;
+      const needsApproval =
+        pe?.meta?.needsApproval === true &&
+        !pe?.parameters?.isApprovedOperation &&
+        !pe?.parameters?.isApprovedUpdate;
+
+      // Only enqueue EXECUTE_ACTION automatically if it does NOT need approval
+      if (!needsApproval) {
+        let feedbackMessage = "✅ Ação aprovada e executada.";
+        if (ntype === "problem" && (op === "update" || op === "patch")) {
+          feedbackMessage = "✅ Problema atualizado.";
+        }
+
+        finalSideEffects.push({
+          type: "EXECUTE_ACTION",
+          payload: {
+            tool_name: pe.tool_name,
+            parameters: pe.parameters,
+            feedbackMessage,
+            correlationId,
+          },
+        });
+      } else {
+        consola.debug(
+          "[agentChat] EXECUTE_ACTION adiado: aguardando aprovação do usuário."
+        );
+      }
     }
 
     if (realState.response && finalSideEffects.length === 0) {

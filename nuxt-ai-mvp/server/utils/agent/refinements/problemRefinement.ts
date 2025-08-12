@@ -2,7 +2,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import registry from "~/server/utils/agent/registry/nodeTypes.json" assert { type: "json" };
+import nodeTypesRaw from "~/config/nodeTypes-raw";
+import { GEMINI_15_FLASH } from "~/config/aiModels";
 import { consola } from "consola";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
@@ -12,11 +13,24 @@ import { cleanToolSchema } from "~/server/utils/cleanToolSchema";
 import type { PlanExecuteState, ActionProposal } from "../graphState";
 
 // Carrega o prompt de refinamento do arquivo, como antes
+const refinementPromptRel =
+  (nodeTypesRaw as any)?.problem?.operations?.update?.refinementPrompt ??
+  (nodeTypesRaw as any)?.problem?.actions?.update?.refinementPrompt ?? // retrocompat, se ainda existir
+  "problemRefinement.md"; // fallback
+
 const promptPath = path.resolve(
   "server/utils/agent/prompts",
-  registry.problem.actions.update.refinementPrompt
+  refinementPromptRel
 );
-const problemSystemPrompt = fs.readFileSync(promptPath, "utf8");
+let problemSystemPrompt =
+  "Você é um assistente que sugere melhorias concisas para título e descrição do problema.";
+try {
+  problemSystemPrompt = fs.readFileSync(promptPath, "utf8");
+} catch (e) {
+  consola.warn("[problemRefinement] Prompt não encontrado, usando fallback.", {
+    promptPath,
+  });
+}
 
 const ProblemRefinementSchema = z.object({
   title: z
@@ -68,7 +82,7 @@ export async function refineProblemHelper(
   }
 
   const model = new ChatGoogleGenerativeAI({
-    model: "gemini-1.5-flash-latest",
+    model: GEMINI_15_FLASH,
     apiKey: process.env.GEMINI_API_KEY,
     temperature: 0.3,
   }).bind({
@@ -108,18 +122,19 @@ export async function refineProblemHelper(
 
     // Retorna a proposta de ação para o agentNode lidar com ela
     return {
-      tool_name: "problem.update",
+      tool_name: "nodeTool",
+      render: "chat", // deixa a decisão final para o servidor; aqui só um resumo curto
+      summary: "Proposta de atualização do problema (título e descrição).",
+      diff: undefined,
       parameters: {
-        taskId: state.canvasContext?.task_id,
+        operation: "update",
+        nodeType: "problem",
         nodeId,
         newData: {
           title: parsed.title,
           description: parsed.description,
         },
-        isApprovedUpdate: true,
       },
-      displayMessage:
-        "A IA propõe as seguintes alterações no Problema Inicial. Você aprova?",
     };
   } catch (e) {
     const errorMsg = "[refineProblemHelper] Erro ao parsear dados do modelo";

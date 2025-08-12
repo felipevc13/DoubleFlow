@@ -6,22 +6,32 @@ import * as uuid from "uuid";
 const uuidv4 = uuid.v4;
 import { z } from "zod";
 
-import { effectSchemas, ShowConfirm } from "~/lib/sideEffects";
+import { effectSchemas } from "~/lib/sideEffects";
 import type { SideEffect } from "~/lib/sideEffects";
+
+type ApprovalAction = {
+  tool_name: string;
+  parameters: Record<string, any>;
+  nodeId?: string;
+  correlationId: string;
+};
 
 interface ChatMessage {
   role: "user" | "agent" | "system" | "confirmation";
   content: string;
-  action?: z.infer<typeof ShowConfirm>["payload"];
+  action?: ApprovalAction;
 }
 
+const messages = ref<ChatMessage[]>([]);
+
 export function useAgentLogic(taskIdRef: Ref<string>) {
-  const messages = ref<ChatMessage[]>([]);
   const isLoading = ref(false);
   const taskFlowStore = useTaskFlowStore();
   const modalStore = useModalStore();
   const currentCorrelationId = ref<string | null>(null);
   const lastServerCorrelationId = ref<string | null>(null);
+  const awaitingApproval = ref(false);
+  const awaitingApprovalCorrelationId = ref<string | null>(null);
 
   const executeSideEffects = async (
     effects: SideEffect[],
@@ -47,11 +57,25 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       );
       currentCorrelationId.value = correlationId;
     }
+    // Reset approval flag if correlationId changed
+    if (
+      awaitingApprovalCorrelationId.value &&
+      awaitingApprovalCorrelationId.value !== correlationId
+    ) {
+      awaitingApproval.value = false;
+      awaitingApprovalCorrelationId.value = null;
+    }
     // Track last correlationId we saw from server
     if (correlationId) {
       lastServerCorrelationId.value = correlationId;
     }
     if (correlationId !== currentCorrelationId.value) return;
+    // 🔧 Prefer parameters from EXECUTE_ACTION within the same batch (server is source of truth)
+    const firstExecuteAction: any =
+      Array.isArray(effects) &&
+      effects.find((e: any) => e?.type === "EXECUTE_ACTION");
+    const preferExecParams: Record<string, any> | undefined =
+      firstExecuteAction?.payload?.parameters;
     const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
     for (const effect of effects) {
       if (correlationId !== currentCorrelationId.value) break;
@@ -98,35 +122,29 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
               correlationId ||
               currentCorrelationId.value ||
               lastServerCorrelationId.value ||
-              null;
+              ""; // ensure string
 
-            // Decide UI: default to MODAL unless approvalStyle === 'text'
-            const forceText = p?.approvalStyle === "text";
+            // Set approval flags before opening modal or chat confirmation
+            awaitingApproval.value = true;
+            awaitingApprovalCorrelationId.value =
+              correlationHint || correlationId || null;
+
+            // Decide UI a partir do contrato novo
+            const isModal = p?.render === "modal";
 
             // Resolve node & nodeType so we always know which modal to open
             const node = taskFlowStore.nodes.find((n) => n.id === p.nodeId);
             const nodeType = (node?.type as ModalType) ?? ModalType.problem;
 
-            // Normalize diff/proposed data
-            const diffFields = Array.isArray(p?.diffFields)
-              ? p.diffFields
-              : (p as any)?.meta?.ui?.diffFields ?? [];
-            const originalData = p?.originalData ?? node?.data ?? {};
-            const proposedData =
-              p?.proposedData ?? p?.parameters?.newData ?? {};
-
-            if (!forceText) {
+            if (isModal) {
               console.log("[SHOW_CONFIRMATION] opening modal with:", {
                 nodeType,
                 nodeId: p.nodeId,
-                modalTitle: p.modalTitle,
-                message: p.displayMessage,
-                originalData,
-                proposedData,
-                diffFields,
+                summary: p.summary,
+                diff: p.diff,
                 actionToConfirm: {
-                  tool_name: p.tool_name,
-                  parameters: p.parameters,
+                  tool_name: "nodeTool",
+                  parameters: preferExecParams ?? p.parameters,
                   nodeId: p.nodeId,
                   correlationId: correlationHint,
                 },
@@ -138,16 +156,15 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
                   mode: "confirm",
                   diffMode: true,
                   nodeId: p.nodeId,
-                  modalTitle: p.modalTitle || "Revisar Alterações Propostas",
-                  message:
-                    p.displayMessage ||
-                    "Revise e confirme as alterações propostas.",
-                  originalData,
-                  proposedData,
-                  diffFields,
+                  modalTitle: p.summary,
+                  message: p.summary,
+                  diff: p.diff,
+                  // Nota: o actionToConfirm abaixo usa preferExecParams quando existir,
+                  // garantindo que a confirmação aprove a versão mais recente (ex.: newData do EXECUTE_ACTION).
+                  originalData: node?.data,
                   actionToConfirm: {
-                    tool_name: p.tool_name,
-                    parameters: p.parameters,
+                    tool_name: "nodeTool",
+                    parameters: preferExecParams ?? p.parameters,
                     nodeId: p.nodeId,
                     correlationId: correlationHint,
                   },
@@ -157,11 +174,16 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
                 p.nodeId
               );
             } else {
-              // Chat approval (text-only)
+              // Chat approval
               messages.value.push({
                 role: "confirmation",
-                content: p.displayMessage,
-                action: { ...p },
+                content: p.summary,
+                action: {
+                  tool_name: "nodeTool",
+                  parameters: preferExecParams ?? p.parameters,
+                  nodeId: p.nodeId,
+                  correlationId: correlationHint || "",
+                },
               });
             }
             break;
@@ -170,8 +192,17 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
             const { tool_name, parameters, feedbackMessage } = effect.payload;
             console.log("[EXECUTE_ACTION] tool:", tool_name);
             console.log("[EXECUTE_ACTION] parameters:", parameters);
-            if (feedbackMessage) {
-              messages.value.push({ role: "agent", content: feedbackMessage });
+            // Approval short-circuit
+            if (
+              awaitingApproval.value &&
+              awaitingApprovalCorrelationId.value === correlationId &&
+              !(parameters && parameters.isApprovedUpdate === true)
+            ) {
+              console.warn(
+                "[EXECUTE_ACTION] bloqueado: aguardando aprovação do usuário para este correlationId."
+              );
+              // Não executa a ação ainda; ela será reenviada após o resume com isApprovedUpdate=true
+              break;
             }
             isLoading.value = true;
             try {
@@ -274,6 +305,91 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
                   await taskFlowStore.removeNode(nodeId);
                   break;
                 }
+                case "nodeTool": {
+                  const p = parameters as Record<string, any>;
+                  const op = p?.operation;
+                  const nodeType = p?.nodeType;
+
+                  if (op === "update") {
+                    // If it's the Problem node, reuse the same normalization logic as in "problem.update"
+                    if (nodeType === "problem") {
+                      const targetId =
+                        p.nodeId ??
+                        taskFlowStore.nodes.find((n) => n.type === "problem")
+                          ?.id;
+                      if (!targetId) {
+                        console.warn(
+                          "nodeTool/update: nó do tipo 'problem' não encontrado."
+                        );
+                        messages.value.push({
+                          role: "system",
+                          content:
+                            "Não encontrei o card de Problema para atualizar — verifique se ele existe.",
+                        });
+                        break;
+                      }
+
+                      const normalizedData = p.newData ?? {
+                        ...(typeof p.title !== "undefined"
+                          ? { title: p.title }
+                          : {}),
+                        ...(typeof p.description !== "undefined"
+                          ? { description: p.description }
+                          : {}),
+                      };
+
+                      if (
+                        !normalizedData ||
+                        Object.keys(normalizedData).length === 0
+                      ) {
+                        console.warn(
+                          "nodeTool/update: payload sem campos válidos para atualizar."
+                        );
+                        messages.value.push({
+                          role: "system",
+                          content:
+                            "Nada para atualizar no Problema (payload vazio).",
+                        });
+                        break;
+                      }
+
+                      await taskFlowStore.updateNodeData(
+                        targetId,
+                        normalizedData
+                      );
+                      modalStore.closeModal();
+                      break;
+                    }
+
+                    // Generic update for other node types
+                    if (!p?.nodeId) {
+                      console.warn(
+                        "nodeTool/update: nodeId ausente para atualização genérica."
+                      );
+                      messages.value.push({
+                        role: "system",
+                        content:
+                          "Não foi possível atualizar: nodeId ausente para o update.",
+                      });
+                      break;
+                    }
+
+                    await taskFlowStore.updateNodeData(
+                      p.nodeId,
+                      p.newData ?? {}
+                    );
+                    modalStore.closeModal();
+                    break;
+                  }
+
+                  // If other operations arrive via nodeTool in the future, fall back for now
+                  console.warn("nodeTool: operação não suportada:", op);
+                  messages.value.push({
+                    role: "system",
+                    content: `nodeTool: operação não suportada: ${op}`,
+                  });
+                  break;
+                }
                 default: {
                   console.warn("Ferramenta não mapeada:", tool_name);
                   messages.value.push({
@@ -282,10 +398,24 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
                   });
                 }
               }
-              messages.value.push({
-                role: "agent",
-                content: "Ação de texto concluída!",
-              });
+
+              // Clear approval flags if this was an approved update
+              if (parameters && parameters.isApprovedUpdate === true) {
+                awaitingApproval.value = false;
+                awaitingApprovalCorrelationId.value = null;
+              }
+
+              // ✅ Mensagem de sucesso no chat (sempre igual)
+              const successMsg = {
+                role: "agent" as const,
+                content: "✅ Ação concluída",
+              };
+              console.log(
+                "[EXECUTE_ACTION] pushing success chat message:",
+                successMsg
+              );
+              // Use immutable update to ensure reactivity in any shallow watchers
+              messages.value = [...messages.value, successMsg];
             } catch (e) {
               messages.value.push({
                 role: "system",
@@ -565,6 +695,9 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       taskId: safeTaskId,
       resume: { value: resumeValue },
     });
+    // Clear approval flags after sending confirmation
+    awaitingApproval.value = false;
+    awaitingApprovalCorrelationId.value = null;
   };
 
   const handleCancellation = async (actionProposal: any) => {
@@ -637,6 +770,9 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       taskId: safeTaskId,
       resume: { value: resumeValue },
     });
+    // Clear approval flags after sending cancellation
+    awaitingApproval.value = false;
+    awaitingApprovalCorrelationId.value = null;
   };
 
   const fetchHistory = async () => {
