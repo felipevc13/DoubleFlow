@@ -49,7 +49,7 @@ export default defineConfig({
       },
       {
         find: "#supabase/server",
-        replacement: path.resolve(__dirname, "./tests/mocks/imports.ts"),
+        replacement: path.resolve(__dirname, "./tests/mocks/supabaseServer.ts"),
       },
       {
         find: "#build",

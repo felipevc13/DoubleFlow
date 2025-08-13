@@ -244,6 +244,7 @@ import type {
   NodeComponent,
   NodeTypesObject,
 } from "@vue-flow/core";
+import type { Database } from "~/types/supabase";
 
 // ---- Augment global Window for TS ----
 declare global {
@@ -288,10 +289,11 @@ const vueFlowRef = ref<any>(null); // VueFlow instance (typed as any for now)
 const { animateToNode } = useAnimatedFitToNode(vueFlowRef);
 
 // --- Bloco para criação automática do nó inicial problem-1 ---
-import { useSupabaseClient } from "#imports";
 import { useTasksStore } from "~/stores/tasks"; // ajuste conforme o nome correto da sua store
-
-const supabase = useSupabaseClient();
+import { useNuxtApp } from "#imports";
+import type { SupabaseClient } from "@supabase/supabase-js";
+const { $supabase } = useNuxtApp();
+const supabase = $supabase as SupabaseClient<Database>;
 const tasksStore = useTasksStore();
 const initialNodeCreated = ref<boolean>(false);
 
@@ -326,10 +328,7 @@ watchEffect(async () => {
 
     try {
       // Busca o título e descrição do problema na task
-      const task = await tasksStore.fetchTask(
-        supabase,
-        taskFlowStore.currentTaskId
-      );
+      const task = await tasksStore.fetchTask(taskFlowStore.currentTaskId);
       const problemStatement = task?.problem_statement || {
         title: props.taskName,
         description: "",

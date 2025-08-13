@@ -98,23 +98,17 @@ const layoutClass = computed(() => ({
 const taskFlowRef = ref(null);
 const lastClickedNode = ref(null);
 
-const supabase = useSupabaseClient();
-const user = useSupabaseUser();
-
 const modalStore = useModalStore();
 
 onMounted(() => {
   watchEffect(async () => {
-    if (user.value && route.params.slug) {
+    if (route.params.slug) {
       isLoading.value = true;
       try {
         await nextTick();
 
-        // Pass supabase client as the first argument
-        task.value = await tasksStore.fetchTaskBySlug(
-          supabase,
-          route.params.slug
-        );
+        // Pass only slug as argument
+        task.value = await tasksStore.fetchTaskBySlug(route.params.slug);
 
         if (!task.value) throw new Error("Tarefa não encontrada.");
 
@@ -155,11 +149,11 @@ const deleteTask = async () => {
   if (!confirm("Tem certeza que deseja excluir esta tarefa?")) return;
   try {
     // Exclui a tarefa no Supabase
-    await tasksStore.deleteTask(supabase, task.value.id);
+    await tasksStore.deleteTask(task.value.id);
     taskFlowStore.clearTaskFlowState();
 
     // Atualiza a lista de tarefas após exclusão
-    await tasksStore.fetchTasks(supabase);
+    await tasksStore.fetchTasks();
 
     const tasks = tasksStore.tasks;
     if (tasks && tasks.length > 0) {

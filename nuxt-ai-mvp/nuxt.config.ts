@@ -9,12 +9,19 @@ export default defineNuxtConfig({
 
   ssr: true,
 
-  modules: [
-    "@pinia/nuxt",
-    "@nuxtjs/tailwindcss",
-    "@vueuse/nuxt",
-    "@nuxtjs/supabase",
-  ],
+  runtimeConfig: {
+    // Server-only keys (not exposed to the client)
+    SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    // Public keys available on the client
+    public: {
+      SUPABASE_URL:
+        process.env.SUPABASE_URL || "http://localhost:54321/nuxt_config_mock",
+      SUPABASE_ANON_KEY:
+        process.env.SUPABASE_ANON_KEY || "mock_supabase_anon_key_nuxt_config",
+    },
+  },
+
+  modules: ["@pinia/nuxt", "@nuxtjs/tailwindcss", "@vueuse/nuxt"],
 
   imports: {
     autoImport: true,
@@ -27,28 +34,6 @@ export default defineNuxtConfig({
       "stores/**",
     ],
   },
-
-  // Configure the Supabase module directly
-  // @ts-ignore - Supabase module adds this property, but TypeScript isn't recognizing it here.
-  supabase: {
-    redirect: false,
-    url: process.env.SUPABASE_URL || "http://localhost:54321/nuxt_config_mock", // Provide mock URL directly to the module
-    key: process.env.SUPABASE_KEY || "mock_supabase_key_nuxt_config", // Provide mock key directly to the module
-    mock: process.env.NODE_ENV === "test", // Enable mocking for test environment
-    clientOptions: {
-      auth: {
-        // Recommended settings for tests/SSR
-        persistSession: false,
-        autoRefreshToken: false,
-        detectSessionInUrl: false,
-      },
-    },
-  },
-  db: {
-    schema: "./types/supabase.ts",
-  },
-
-  // runtimeConfig will be populated by the @nuxtjs/supabase module based on the above config
 
   build: {
     transpile: ["@vue-flow/core", "vue-router", "uuid"],

@@ -1,11 +1,10 @@
-import { serverSupabaseClient, serverSupabaseUser } from "#supabase/server";
+import { getSupabaseWithAuth } from "~/server/utils/supabase";
 import type { Tables, TablesInsert } from "~/types/supabase";
 
 export default defineEventHandler(async (event) => {
-  const user = await serverSupabaseUser(event);
+  const { supabase, user } = await getSupabaseWithAuth(event);
   if (!user) return { history: [] };
 
-  const supabase = await serverSupabaseClient(event);
   const taskId = getQuery(event).taskId as string;
 
   if (!taskId) return { history: [] };

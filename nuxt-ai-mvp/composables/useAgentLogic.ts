@@ -5,6 +5,7 @@ import { useModalStore, ModalType } from "~/stores/modal";
 import * as uuid from "uuid";
 const uuidv4 = uuid.v4;
 import { z } from "zod";
+import { useNuxtApp } from "#imports";
 
 import { effectSchemas } from "~/lib/sideEffects";
 import type { SideEffect } from "~/lib/sideEffects";
@@ -23,6 +24,19 @@ interface ChatMessage {
 }
 
 const messages = ref<ChatMessage[]>([]);
+
+// Helper: build Authorization header from current Supabase session
+const getAuthHeaders = async (): Promise<Record<string, string>> => {
+  const { $supabase } = useNuxtApp();
+  const {
+    data: { session },
+  } = await $supabase.auth.getSession();
+  const headers: Record<string, string> = {};
+  if (session?.access_token) {
+    headers["Authorization"] = `Bearer ${session.access_token}`;
+  }
+  return headers;
+};
 
 export function useAgentLogic(taskIdRef: Ref<string>) {
   const isLoading = ref(false);
@@ -430,9 +444,13 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
             modalStore.closeModal();
             break;
           case "REFETCH_TASK_FLOW":
-            // Sinal enviado pelo agente para recarregar o flow do Supabase
-            await taskFlowStore.loadTaskFlow(taskIdRef.value);
-            // Se quiser exibir um toast ou mensagem, pode adicionar aqui.
+            // Sinal enviado pelo agente para recarregar o flow do Supabase (sem reinicializar watchers)
+            if (typeof (taskFlowStore as any).refetchTaskFlow === "function") {
+              await (taskFlowStore as any).refetchTaskFlow();
+            } else {
+              // fallback para compatibilidade antiga
+              await taskFlowStore.loadTaskFlow(taskIdRef.value);
+            }
             break;
           default: {
             // Isto só acontece se aparecer um novo tipo não contemplado acima
@@ -463,23 +481,51 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
     currentCorrelationId.value = newCorrelationId;
     try {
       const problemNode = taskFlowStore.nodes.find((n) => n.type === "problem");
+      // Build richer canvas context for the agent
+      const nodesWithPromoted = taskFlowStore.nodes.map((n) => ({
+        id: n.id,
+        type: n.type,
+        title: n.data?.title ?? "",
+        description: n.data?.description ?? "",
+        data: { ...n.data },
+      }));
+
+      const countsByType = nodesWithPromoted.reduce(
+        (acc: Record<string, number>, n) => {
+          acc[n.type] = (acc[n.type] ?? 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>
+      );
+
       const canvasContext = {
+        goal: "Mapa visual de problema, dados e análises para o produto.",
         problem_statement: problemNode
           ? {
+              id: problemNode.id,
               title: problemNode.data?.title || "",
               description: problemNode.data?.description || "",
             }
-          : { title: "", description: "" },
-        nodes: taskFlowStore.nodes.map((n) => ({
-          id: n.id,
-          type: n.type,
-          data: { ...n.data },
-        })),
+          : { id: null, title: "", description: "" },
+
+        // Nós com campos promovidos para facilitar o parsing pelo LLM
+        nodes: nodesWithPromoted,
+
+        // Relações simples
         edges: taskFlowStore.edges.map((e) => ({
           source: e.source,
           target: e.target,
         })),
+
+        // Resumo rápido por tipo (ajuda o modelo a perceber o estado atual do canvas)
+        summary: {
+          countsByType,
+          existingTypes: Array.from(
+            new Set(nodesWithPromoted.map((n) => n.type))
+          ),
+        },
       };
+
       const uiContext = {
         activeModal: modalStore.getActiveModalType
           ? {
@@ -490,6 +536,7 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       };
       const response = await $fetch<any>("/api/ai/agentChat", {
         method: "POST",
+        headers: await getAuthHeaders(),
         body: {
           userInput,
           taskId: taskIdRef.value,
@@ -578,6 +625,7 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
 
       const response = await $fetch<any>("/api/ai/agentChat", {
         method: "POST",
+        headers: await getAuthHeaders(),
         body,
       });
 
@@ -778,7 +826,10 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
   const fetchHistory = async () => {
     try {
       const response = await $fetch<any>(
-        `/api/ai/history?taskId=${encodeURIComponent(taskIdRef.value)}`
+        `/api/ai/history?taskId=${encodeURIComponent(taskIdRef.value)}`,
+        {
+          headers: await getAuthHeaders(),
+        }
       );
       if (Array.isArray(response.history) && response.history.length > 0) {
         messages.value = response.history.map((msg: any) => ({

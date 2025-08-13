@@ -1,4 +1,4 @@
-import { serverSupabaseClient } from "#supabase/server";
+import { getSupabaseAuth } from "~/server/utils/supabase";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { H3Event } from "h3";
 
@@ -24,7 +24,11 @@ export default defineEventHandler(
       return { error: "question id is required" };
     }
 
-    const supabase: SupabaseClient = await serverSupabaseClient(event);
+    const { supabase, user } = await getSupabaseAuth(event);
+    if (!user) {
+      event.node.res.statusCode = 401;
+      return { error: "unauthorized" };
+    }
     const { error } = await supabase.from("questions").delete().eq("id", id);
 
     if (error) {

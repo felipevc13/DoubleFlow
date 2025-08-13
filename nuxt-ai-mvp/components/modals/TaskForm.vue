@@ -51,33 +51,33 @@
   </BaseModal>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, watch, computed } from "vue";
 import { useRouter } from "vue-router";
-import { useTasksStore } from "../stores/tasks";
-import { useSupabaseClient } from "#imports";
-import { useNuxtApp } from "#app";
+import { useTasksStore } from "~/stores/tasks";
+import { useNuxtApp } from "#imports";
 import BaseModal from "./BaseModal.vue";
 
-const props = defineProps({
-  isOpen: {
-    type: Boolean,
-    default: false,
-  },
-  task: {
-    type: Object,
-    default: null,
-  },
-});
-const emit = defineEmits(["close", "save"]);
+type TaskLite = { id: string; name: string; slug: string };
+
+const props = withDefaults(
+  defineProps<{ isOpen: boolean; task: TaskLite | null }>(),
+  {
+    isOpen: false,
+    task: null,
+  }
+);
+const emit = defineEmits<{
+  (e: "close"): void;
+  (e: "save", task: TaskLite | undefined): void;
+}>();
 
 const tasksStore = useTasksStore();
-const { $toast } = useNuxtApp();
+const { $toast, $supabase } = useNuxtApp();
 const router = useRouter();
-const supabase = useSupabaseClient();
 
-const taskName = ref("");
-const loading = ref(false);
+const taskName = ref<string>("");
+const loading = ref<boolean>(false);
 
 const computedTitle = computed(() =>
   props.task ? "Editar Tarefa" : "Nova Tarefa"
@@ -94,24 +94,40 @@ watch(
   { immediate: true }
 );
 
+function log(...args: any[]) {
+  // eslint-disable-next-line no-console
+  console.debug("[TaskForm]", ...args);
+}
+
 const save = async () => {
   if (!taskName.value.trim()) {
     $toast?.error("Por favor, preencha o nome da tarefa.");
     return;
   }
 
+  log("save:start", {
+    nameRaw: taskName.value,
+    nameTrimmed: taskName.value.trim(),
+    typeofName: typeof taskName.value,
+    hasPropsTask: !!props.task,
+    propsTaskId: props.task?.id || null,
+  });
+
   loading.value = true;
   try {
-    let savedTask;
+    let savedTask: TaskLite | undefined;
     if (props.task) {
-      savedTask = await tasksStore.updateTask(supabase, props.task.id, {
+      log("updateTask:payload", { id: props.task.id, name: taskName.value });
+      savedTask = await tasksStore.updateTask(props.task.id, {
         name: taskName.value,
       });
+      log("updateTask:success", { savedTask });
       $toast?.success("Tarefa atualizada com sucesso!");
     } else {
-      savedTask = await tasksStore.createTask(supabase, {
-        name: taskName.value,
-      });
+      const createPayload = { name: taskName.value };
+      log("createTask:payload", createPayload);
+      savedTask = await tasksStore.createTask(createPayload);
+      log("createTask:success", { savedTask });
       $toast?.success("Tarefa criada com sucesso!");
       if (savedTask?.id) {
         router.push(`/task/${savedTask.slug}`);
@@ -119,9 +135,10 @@ const save = async () => {
     }
 
     emit("save", savedTask);
-  } catch (error) {
-    console.error("Erro ao salvar tarefa:", error);
-    $toast?.error(`Falha ao salvar a tarefa: ${error.message}`);
+  } catch (error: unknown) {
+    const err = error as { message?: string };
+    log("save:error", { message: err?.message, error: err });
+    $toast?.error(`Falha ao salvar a tarefa: ${err?.message}`);
   } finally {
     loading.value = false;
   }

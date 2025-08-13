@@ -22,7 +22,11 @@
         <div
           v-for="(msg, index) in messages"
           :key="index"
-          :class="bubbleClass(msg.role)"
+          :class="
+            msg.role === 'confirmation'
+              ? 'flex justify-start w-full'
+              : bubbleClass(msg.role)
+          "
         >
           <!-- DEBUG INFO -->
           <!-- <div v-if="msg.role === 'confirmation'">
@@ -34,7 +38,7 @@
 
           <ActionConfirmation
             v-if="msg.role === 'confirmation' && msg.action"
-            :action="msg.action"
+            :action="ensureAction(msg.action)"
             @confirm="handleConfirmation(msg.action)"
             @cancel="handleCancellation(msg.action)"
           />
@@ -108,14 +112,39 @@
   </BaseSidebar>
 </template>
 
-<script setup>
-import { ref, watch, nextTick, watchEffect, toRef } from "vue";
+<script setup lang="ts">
+import {
+  ref,
+  watch,
+  nextTick,
+  watchEffect,
+  toRef,
+  onMounted,
+  onBeforeUnmount,
+} from "vue";
 import BaseSidebar from "./BaseSidebar.vue";
 import OpenRight from "../icon/OpenRight.vue";
 import { useAgentLogic } from "~/composables/useAgentLogic";
 import { marked } from "marked"; // Para renderizar markdown nas respostas
 import ActionConfirmation from "~/components/agent/ActionConfirmation.vue";
-import { useSupabaseUser } from "#imports";
+import { useSupabaseClient } from "#imports";
+import type { User } from "@supabase/supabase-js";
+
+// Minimal ActionProposal type shape expected by ActionConfirmation
+type ActionProposal = {
+  tool_name: string;
+  parameters: Record<string, any>;
+  displayMessage: string;
+} & Record<string, any>;
+
+function ensureAction(action: any): ActionProposal {
+  return {
+    tool_name: action?.tool_name ?? "",
+    parameters: action?.parameters ?? {},
+    displayMessage: action?.displayMessage ?? "Confirmar esta ação?",
+    ...action,
+  } as ActionProposal;
+}
 
 const props = defineProps({
   isOpen: Boolean,
@@ -126,9 +155,43 @@ const emit = defineEmits(["close"]);
 const taskIdRef = toRef(props, "taskId");
 
 const userInput = ref("");
-const chatContainer = ref(null);
+const chatContainer = ref<HTMLDivElement | null>(null);
 
-const user = useSupabaseUser(); // user reativo do supabase
+const supabase = useSupabaseClient();
+const user = ref<User | null>(null);
+const isAuthChecked = ref(false);
+let authUnsub: null | (() => void) = null;
+
+onMounted(async () => {
+  try {
+    // get current user once
+    const { data } = await supabase.auth.getUser();
+    user.value = data?.user ?? null;
+    isAuthChecked.value = true;
+
+    // subscribe to auth changes so the sidebar stays in sync
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        user.value = session?.user ?? null;
+        isAuthChecked.value = true;
+      }
+    );
+    authUnsub = listener?.subscription?.unsubscribe ?? null;
+  } catch (err) {
+    console.error("[AgentSidebar] auth.getUser error:", err);
+    user.value = null;
+    isAuthChecked.value = true;
+  }
+});
+
+onBeforeUnmount(() => {
+  if (authUnsub) {
+    try {
+      authUnsub();
+    } catch {}
+    authUnsub = null;
+  }
+});
 
 // Inicializa a lógica do agente
 const {
@@ -158,7 +221,7 @@ watchEffect(() => {
     if (messages.value.length === 0) {
       fetchHistory();
     }
-  } else if (!userId && props.isOpen) {
+  } else if (isAuthChecked.value && !userId && props.isOpen) {
     messages.value = [
       {
         role: "system",
@@ -168,15 +231,15 @@ watchEffect(() => {
   }
 });
 
-const renderMarkdown = (text) => marked.parse(text || "");
+const renderMarkdown = (text: string) => marked.parse(text || "");
 
-const messageClass = (role) => ({
+const messageClass = (role: "user" | "agent" | "system") => ({
   chat: true,
   "chat-start": role === "agent" || role === "system",
   "chat-end": role === "user",
 });
 
-const bubbleClass = (role) => {
+const bubbleClass = (role: "user" | "agent" | "system") => {
   if (role === "user") return "flex justify-end w-full";
   if (role === "agent") return "flex justify-start w-full";
   if (role === "system") return "flex justify-start w-full";
@@ -189,7 +252,7 @@ const handleSend = () => {
   userInput.value = "";
 };
 
-const handleKeyDown = (e) => {
+const handleKeyDown = (e: KeyboardEvent) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     handleSend();
@@ -197,8 +260,8 @@ const handleKeyDown = (e) => {
   // Shift+Enter: quebra linha normalmente
 };
 
-const autoResize = (event) => {
-  const textarea = event.target;
+const autoResize = (event: Event) => {
+  const textarea = event.target as HTMLTextAreaElement;
   textarea.style.height = "auto";
   textarea.style.height = Math.min(textarea.scrollHeight, 180) + "px";
 };
@@ -209,7 +272,8 @@ watch(
     console.log("[AgentSidebar] Messages updated:", messages.value);
     await nextTick();
     if (chatContainer.value) {
-      chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
+      const el = chatContainer.value as HTMLDivElement;
+      el.scrollTop = el.scrollHeight;
     }
   },
   { deep: true }

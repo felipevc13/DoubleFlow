@@ -2,201 +2,89 @@
  * Central service for all persistence operations related to the task‑flow
  * (nodes, edges) stored in the `task_flows` table on Supabase.
  *
- * This service MUST be used from server‑side context only (Nitro runtime).
- * Agent tools and API routes can import these helpers to avoid duplicating
- * Supabase logic.
+ * ⚠️ Importante:
+ * Este service agora é um "façade" fino que delega todas as operações
+ * ao repositório único `~/repositories/flows` (Single Source of Truth).
+ * Mantemos as mesmas assinaturas públicas (com `event`) por compatibilidade,
+ * e agora passamos o `event` para as funções do repositório.
  */
 
-import { serverSupabaseClient } from "#supabase/server";
 import type { H3Event } from "h3";
-import type { Database } from "~/types/supabase";
-import type { Json } from "~/types/supabase";
-import type { TaskFlowNode, TaskFlowEdge } from "~/types/taskflow";
-import type { SupabaseClient } from "@supabase/supabase-js";
-type Supa = SupabaseClient<Database>;
+import {
+  getFlowByTaskId as repoGetFlowByTaskId,
+  getNodeById as repoGetNodeById,
+  createNodeInFlow as repoCreateNodeInFlow,
+  updateNodeDataInFlow as repoUpdateNodeDataInFlow,
+  deleteNodeFromFlow as repoDeleteNodeFromFlow,
+  type FlowRecord,
+  type NodeRecord,
+} from "~/repositories/flows";
 
 /* -------------------------------------------------------------------------- */
-/* Helpers                                                                    */
-/* -------------------------------------------------------------------------- */
-
-async function getTaskFlow(
-  supabase: Supa,
-  taskId: string
-): Promise<{ nodes: TaskFlowNode[]; edges: TaskFlowEdge[] }> {
-  const { data, error } = await supabase
-    .from("task_flows")
-    .select("nodes, edges")
-    .eq("id", taskId)
-    .single();
-
-  if (error) {
-    throw new Error(
-      `[taskFlowService] Could not fetch task flow ${taskId}: ${error.message}`
-    );
-  }
-
-  // CORREÇÃO: Parseia os campos JSON antes de retornar
-  const nodes =
-    data?.nodes && typeof data.nodes === "string"
-      ? JSON.parse(data.nodes)
-      : data?.nodes || [];
-  const edges =
-    data?.edges && typeof data.edges === "string"
-      ? JSON.parse(data.edges)
-      : data?.edges || [];
-
-  return {
-    nodes: Array.isArray(nodes) ? nodes : [],
-    edges: Array.isArray(edges) ? edges : [],
-  };
-}
-
-async function persistTaskFlow(
-  supabase: Supa,
-  taskId: string,
-  nodes: TaskFlowNode[],
-  edges: TaskFlowEdge[],
-  options?: { force?: boolean }
-) {
-  // Guarda anti-vazio: evita sobrescrever o banco com []/[] por engano
-  if (
-    !options?.force &&
-    Array.isArray(nodes) &&
-    Array.isArray(edges) &&
-    nodes.length === 0 &&
-    edges.length === 0
-  ) {
-    // Silenciosamente ignora a atualização vazia
-    return;
-  }
-  const { data, error } = await supabase
-    .from("task_flows")
-    .update({
-      nodes: nodes as unknown as Json,
-      edges: edges as unknown as Json,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", taskId)
-    .select();
-
-  if (error) {
-    throw new Error(
-      `[taskFlowService] Falha ao persistir task flow ${taskId}: ${error.message}`
-    );
-  }
-
-  if (!data || data.length === 0) {
-    throw new Error(
-      `[taskFlowService] Falha ao persistir task flow ${taskId}: Nenhuma linha foi atualizada. Verifique as políticas de Row-Level Security (RLS).`
-    );
-  }
-}
-
-/* -------------------------------------------------------------------------- */
-/* Public API                                                                 */
+/* Public API (compatível)                                                    */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Updates the data of an existing node.
+ * Obtém o flow completo de uma task (nodes + edges) a partir do banco.
+ * Agora passamos o `event` para o repositório.
+ */
+export async function getFlowByTaskId(
+  event: H3Event,
+  taskId: string
+): Promise<FlowRecord | null> {
+  return await repoGetFlowByTaskId(event, taskId);
+}
+
+/**
+ * Obtém um nó específico pelo ID diretamente do repositório.
+ * Agora passamos o `event` para o repositório.
+ */
+export async function getNodeById(
+  event: H3Event,
+  taskId: string,
+  nodeId: string
+): Promise<NodeRecord | null> {
+  return await repoGetNodeById(event, taskId, nodeId);
+}
+
+/**
+ * Atualiza o `data` de um nó existente e persiste no banco.
+ * Agora passamos o `event` para o repositório.
  */
 export async function updateNodeDataInFlow(
   event: H3Event,
   taskId: string,
   nodeId: string,
   newData: Record<string, any>
-) {
-  const supabase = await serverSupabaseClient<Database>(event);
-
-  const { nodes, edges } = await getTaskFlow(supabase, taskId);
-  const idx = nodes.findIndex((n) => n.id === nodeId);
-  if (idx === -1) {
-    throw new Error(`[taskFlowService] Node ${nodeId} not found in flow.`);
-  }
-
-  nodes[idx] = {
-    ...nodes[idx],
-    data: {
-      ...(nodes[idx].data ?? {}),
-      ...newData,
-      updated_at: new Date().toISOString(),
-    },
-  };
-
-  await persistTaskFlow(supabase, taskId, nodes, edges);
-
-  return nodes[idx];
+): Promise<NodeRecord> {
+  return await repoUpdateNodeDataInFlow(event, taskId, nodeId, newData);
 }
 
 /**
- * Creates a new node of `type` and (optionally) links it to `sourceNodeId`.
- * Returns the created node.
+ * Cria um novo nó do tipo `type` com `initialData` opcional.
+ * Observação: ligação edge opcional (sourceNodeId) não é feita aqui.
+ * Se necessário, trate edges em um serviço específico de edges.
+ * Agora passamos o `event` para o repositório.
  */
 export async function createNodeInFlow(
   event: H3Event,
   taskId: string,
   type: string,
-  sourceNodeId?: string
-) {
-  const supabase = await serverSupabaseClient<Database>(event);
-
-  const { nodes, edges } = await getTaskFlow(supabase, taskId);
-
-  const nodeId = `node-${
-    globalThis.crypto?.randomUUID?.() || (await import("uuid")).v4()
-  }`;
-  const newNode: TaskFlowNode = {
-    id: nodeId,
-    type,
-    position: { x: 0, y: 0 },
-    data: {} as any,
-    width: 180,
-    height: 120,
-    selected: false,
-    dragging: false,
-    resizing: false,
-    computedPosition: { x: 0, y: 0 },
-  } as any;
-
-  const nextNodes = [...nodes, newNode];
-
-  let nextEdges = edges;
-  if (sourceNodeId) {
-    const newEdge: TaskFlowEdge = {
-      id: `edge-${crypto.randomUUID()}`,
-      source: sourceNodeId,
-      target: nodeId,
-      sourceHandle: null,
-      targetHandle: null,
-      type: "default",
-      data: {},
-      selected: false,
-    } as any;
-    nextEdges = [...edges, newEdge];
-  }
-
-  await persistTaskFlow(supabase, taskId, nextNodes, nextEdges);
-
-  return newNode;
+  initialData: Record<string, any> = {},
+  _sourceNodeId?: string
+): Promise<NodeRecord> {
+  return await repoCreateNodeInFlow(event, taskId, type, initialData, null);
 }
 
 /**
- * Deletes a node (and any edges connected to it).
+ * Deleta um nó (e as edges conectadas a ele) e persiste no banco.
+ * Agora passamos o `event` para o repositório.
  */
 export async function deleteNodeFromFlow(
   event: H3Event,
   taskId: string,
   nodeId: string
-) {
-  const supabase = await serverSupabaseClient<Database>(event);
-
-  const { nodes, edges } = await getTaskFlow(supabase, taskId);
-
-  const nextNodes = nodes.filter((n) => n.id !== nodeId);
-  const nextEdges = edges.filter(
-    (e) => e.source !== nodeId && e.target !== nodeId
-  );
-
-  await persistTaskFlow(supabase, taskId, nextNodes, nextEdges);
-
+): Promise<{ deleted: boolean; nodeId: string }> {
+  await repoDeleteNodeFromFlow(event, taskId, nodeId);
   return { deleted: true, nodeId };
 }

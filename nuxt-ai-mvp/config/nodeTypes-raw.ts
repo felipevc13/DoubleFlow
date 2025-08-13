@@ -42,6 +42,14 @@ const nodeTypesRaw = {
   // DATASOURCE: somente criação e deleção (sem update/patch)
   dataSource: {
     version: "1.0.0",
+    aliases: [
+      "card de dados",
+      "dados",
+      "fonte de dados",
+      "data card",
+      "dataset",
+    ],
+    purpose: "Armazena fontes/planilhas/datasets para análises.",
     fields: {
       editable: ["title", "description", "sources"],
     },

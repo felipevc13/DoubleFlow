@@ -5,11 +5,12 @@ import type { SideEffect } from "~/lib/sideEffects";
 import { getAgentGraph } from "~/server/utils/agent/agentGraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import pg from "pg";
-import { serverSupabaseClient, serverSupabaseUser } from "#supabase/server";
+import { getSupabaseWithAuth } from "~/server/utils/supabase";
 import { SupabaseChatMessageHistory } from "~/server/utils/agent-tools/supabaseMemory";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { randomUUID } from "crypto";
 import { Command } from "@langchain/langgraph";
+import nodeTypesRaw from "~/config/nodeTypes-raw";
 
 // Build a coherent confirmation summary/diff using the actual newData that will be executed
 function computeConfirmation(payload: any) {
@@ -78,7 +79,7 @@ export default defineEventHandler(
     consola.debug("[agentChat] mode:", mode);
     consola.debug("[agentChat] resume (value only):", resume?.value);
 
-    const user = await serverSupabaseUser(event);
+    const { supabase, user } = await getSupabaseWithAuth(event);
 
     if (!user) {
       throw createError({ statusCode: 401, message: "Não autorizado" });
@@ -87,7 +88,6 @@ export default defineEventHandler(
       throw createError({ statusCode: 400, message: "taskId é obrigatório" });
     }
 
-    const supabase = await serverSupabaseClient<Database>(event);
     const memory = new SupabaseChatMessageHistory({
       client: supabase,
       conversationId: taskId,
@@ -209,10 +209,35 @@ export default defineEventHandler(
         consola.success("[agentChat] RESUME: getState concluído");
       } else {
         consola.info("[agentChat] Invocando grafo com input inicial.");
+        // Enriquecer o canvasContext com catálogo e títulos/descrições promovidos
+        const catalogSummary = Object.fromEntries(
+          Object.keys(nodeTypesRaw).map((t) => [
+            t,
+            {
+              purpose: (nodeTypesRaw as any)[t]?.purpose ?? "",
+              aliases: (nodeTypesRaw as any)[t]?.aliases ?? [],
+              operations: Object.keys(
+                (nodeTypesRaw as any)[t]?.operations ?? {}
+              ),
+            },
+          ])
+        );
+
+        const canvasContextRich = {
+          ...(canvasContext || {}),
+          nodes: Array.isArray(canvasContext?.nodes)
+            ? (canvasContext.nodes as any[]).map((n: any) => ({
+                ...n,
+                title: n?.title ?? n?.data?.title ?? "",
+                description: n?.description ?? n?.data?.description ?? "",
+              }))
+            : [],
+          catalog: catalogSummary,
+        };
         finalState = await agentGraph.invoke(
           {
             input: userInput,
-            canvasContext,
+            canvasContext: canvasContextRich,
             messages: messagesForGraph,
             taskId,
           },

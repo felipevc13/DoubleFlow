@@ -1,10 +1,10 @@
-import { serverSupabaseClient, serverSupabaseUser } from "#supabase/server";
+import { getSupabaseAuth } from "~/server/utils/supabase";
 import { validate as validateUUID } from "uuid";
 
 export default defineEventHandler(async (event) => {
   // Obtém o parâmetro taskId da rota
   const taskId = getRouterParam(event, "taskId");
-  const user = await serverSupabaseUser(event);
+  const { supabase, user } = await getSupabaseAuth(event);
 
   console.log("SUPABASE_URL:", process.env.SUPABASE_URL);
   console.log(
@@ -22,8 +22,6 @@ export default defineEventHandler(async (event) => {
       message: "O ID da Tarefa precisa ser um UUID válido.",
     });
   }
-
-  const supabase = await serverSupabaseClient(event);
 
   // Busca a conversa para este taskId (assumindo que agent_conversations.id = tasks.id)
   const { data, error } = await supabase

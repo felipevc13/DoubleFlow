@@ -1,4 +1,4 @@
-import { serverSupabaseClient } from "#supabase/server";
+import { serverSupabase } from "~/server/utils/supabase";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { H3Event } from "h3";
 import { getQuery } from "h3"; // Assuming getUserFromEvent is also from h3 or a similar utility
@@ -54,7 +54,7 @@ export default defineEventHandler(
       return { error: "Usuário não autenticado" };
     }
 
-    const supabase: SupabaseClient = await serverSupabaseClient(event); // Correctly initialize client
+    const supabase: SupabaseClient = await serverSupabase();
     const { data, error } = await supabase
       .from("surveys")
       .select("*") // Consider selecting specific columns for better performance and type safety

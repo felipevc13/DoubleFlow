@@ -1,6 +1,10 @@
-import { serverSupabaseClient } from '#supabase/server';
-import type { SupabaseClient, PostgrestError, PostgrestResponse } from '@supabase/supabase-js';
-import type { H3Event } from 'h3';
+import { getSupabaseAuth } from "~/server/utils/supabase";
+import type {
+  SupabaseClient,
+  PostgrestError,
+  PostgrestResponse,
+} from "@supabase/supabase-js";
+import type { H3Event } from "h3";
 
 interface RequestBody {
   order: string[];
@@ -33,14 +37,17 @@ export default defineEventHandler(
 
     if (
       !Array.isArray(order) ||
-      order.some(id => typeof id !== 'string') ||
+      order.some((id) => typeof id !== "string") ||
       !survey_id ||
-      typeof survey_id !== 'string'
+      typeof survey_id !== "string"
     ) {
       event.node.res.statusCode = 400;
-      return { error: 'Invalid request body: order (array of strings) and survey_id (string) are required.' };
+      return {
+        error:
+          "Invalid request body: order (array of strings) and survey_id (string) are required.",
+      };
     }
-    
+
     if (order.length === 0) {
       // If an empty order is acceptable (e.g., to clear order), handle accordingly.
       // For now, assuming it implies no operation or should be an error if an update is expected.
@@ -51,7 +58,11 @@ export default defineEventHandler(
       // return { success: true, results: [] };
     }
 
-    const supabase: SupabaseClient = await serverSupabaseClient(event);
+    const { supabase, user } = await getSupabaseAuth(event);
+    if (!user) {
+      event.node.res.statusCode = 401;
+      return { error: "unauthorized" };
+    }
     const results: UpdateResultItem[] = [];
 
     try {
@@ -60,11 +71,11 @@ export default defineEventHandler(
         // The .select() here will return the updated rows.
         // If you don't need the updated data back, you can remove .select().
         const response: PostgrestResponse<any> = await supabase
-          .from('questions')
+          .from("questions")
           .update({ order: idx })
-          .eq('id', questionId)
-          .eq('survey_id', survey_id) // Ensure the question belongs to the specified survey
-          .select(); 
+          .eq("id", questionId)
+          .eq("survey_id", survey_id) // Ensure the question belongs to the specified survey
+          .select();
 
         results.push({
           questionId,
@@ -89,14 +100,13 @@ export default defineEventHandler(
 
       event.node.res.statusCode = 200;
       return { success: true, results };
-
     } catch (e: any) {
       console.error(
         `Unexpected error during question order update for survey ${survey_id}:`,
         e
       );
       event.node.res.statusCode = 500;
-      return { error: e.message || 'An unexpected error occurred.', results };
+      return { error: e.message || "An unexpected error occurred.", results };
     }
   }
 );

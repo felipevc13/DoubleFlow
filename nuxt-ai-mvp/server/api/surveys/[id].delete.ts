@@ -1,4 +1,4 @@
-import { serverSupabaseClient } from "#supabase/server";
+import { serverSupabase } from "~/server/utils/supabase";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { H3Event } from "h3";
 
@@ -25,7 +25,7 @@ export default defineEventHandler(
     }
 
     // A linha abaixo estava faltando a instanciação do SupabaseClient
-    const supabase: SupabaseClient = await serverSupabaseClient(event);
+    const supabase: SupabaseClient = serverSupabase();
     const { error } = await supabase.from("surveys").delete().eq("id", id);
 
     if (error) {

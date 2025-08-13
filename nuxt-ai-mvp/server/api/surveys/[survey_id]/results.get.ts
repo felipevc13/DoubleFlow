@@ -1,4 +1,4 @@
-import { serverSupabaseClient } from "#supabase/server";
+import { getSupabase } from "~/server/utils/supabase";
 import type { SupabaseClient, PostgrestError } from "@supabase/supabase-js";
 import {
   defineEventHandler,
@@ -56,7 +56,7 @@ interface ErrorResponse {
 
 export default defineEventHandler(
   async (event: H3Event): Promise<ResultsResponse | ErrorResponse> => {
-    const client: SupabaseClient = await serverSupabaseClient(event);
+    const client: SupabaseClient = getSupabase(event);
     const surveyId = getRouterParam(event, "survey_id");
 
     if (!surveyId) {

@@ -1,4 +1,4 @@
-import { serverSupabaseClient } from "#supabase/server";
+import { serverSupabase } from "~/server/utils/supabase";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   defineEventHandler,
@@ -30,7 +30,7 @@ interface ErrorResponse {
 
 export default defineEventHandler(
   async (event: H3Event): Promise<Survey | ErrorResponse> => {
-    const client: SupabaseClient = await serverSupabaseClient(event);
+    const client: SupabaseClient = serverSupabase();
     const surveyId = getRouterParam(event, "id");
     const body = await readBody<UpdateSurveyBody>(event);
 

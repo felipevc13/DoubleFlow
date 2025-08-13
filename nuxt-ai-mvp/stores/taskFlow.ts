@@ -13,7 +13,6 @@ function toErrorString(err: unknown): string {
 
 import { useModalStore, ModalType } from "~/stores/modal";
 import type { RealtimeChannel } from "@supabase/supabase-js";
-const supabaseChannel: Ref<RealtimeChannel | null> = ref(null);
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -257,7 +256,7 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
     width: 0,
     height: 0,
   });
-  // Explicitly type the Supabase client with the generated Database type
+  // Use the Supabase client without explicit Database type
   const supabase = useSupabaseClient();
   // --- Composables (persistence & graph helpers) ---
   const { loadFlow, saveFlowDebounced } = useTaskFlowPersistence();
@@ -528,8 +527,6 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
       supabaseChannel.value = null;
     }
 
-    const supabase = useSupabaseClient();
-
     const channel = supabase.channel(`survey_responses:task_id=eq.${taskId}`);
 
     channel
@@ -541,7 +538,7 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
           table: "survey_responses",
           filter: `task_id=eq.${taskId}`,
         },
-        async (payload) => {
+        async (payload: RealtimePostgresChangesPayload<any>) => {
           const surveyId = payload.new.survey_id;
           if (!surveyId) return;
 
@@ -561,7 +558,7 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
           }
         }
       )
-      .subscribe((status) => {
+      .subscribe((status: string) => {
         if (status === "SUBSCRIBED") {
         } else {
         }
@@ -627,9 +624,9 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
       currentTaskId.value = taskId;
       nodes.value = loadedNodes.map(validateNode);
       // (Removido: criação automática do node problem-1)
-      edges.value = loadedEdges.filter((edge: TaskFlowEdge) =>
+      edges.value = loadedEdges.filter((edge) =>
         validateEdge(edge)
-      );
+      ) as TaskFlowEdge[];
       viewport.value = {
         x: 0,
         y: 0,
@@ -667,6 +664,41 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
       isInitialLoadComplete.value = true;
     }
     setupRealtimeSubscription(taskId);
+  };
+
+  // Lightweight refetch that avoids re-initialization and prevents save loop
+  const refetchTaskFlow = async (): Promise<void> => {
+    if (!currentTaskId.value) return;
+    isTransitioning.value = true; // prevents watcher from saving while we apply server state
+    try {
+      const {
+        nodes: loadedNodes,
+        edges: loadedEdges,
+        viewport: loadedViewport,
+      } = await loadFlow(currentTaskId.value);
+
+      nodes.value = loadedNodes.map(validateNode);
+      edges.value = loadedEdges.filter((edge) =>
+        validateEdge(edge)
+      ) as TaskFlowEdge[];
+      if (loadedViewport && typeof loadedViewport === "object") {
+        viewport.value = {
+          x: 0,
+          y: 0,
+          zoom: 1,
+          width: 0,
+          height: 0,
+          ...loadedViewport,
+        };
+      }
+    } catch (err) {
+      console.error(
+        "[TaskFlowStore refetchTaskFlow] error via useTaskFlowPersistence:",
+        err
+      );
+    } finally {
+      isTransitioning.value = false;
+    }
   };
 
   const saveTaskFlow = async (): Promise<any | undefined> => {
@@ -1158,7 +1190,7 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
     // Passo 2: Função que realmente remove o nó (lógica antiga aqui dentro)
     const performDelete = async () => {
       // --- Centralized side‑effects: delete associated DB rows ---
-      const supabase = useSupabaseClient<Database>();
+      // Using the outer-scoped `supabase` client created at store initialization
 
       // Delete report row (cascades) when removing a ReportCard
       if (
@@ -2159,6 +2191,7 @@ export const useTaskFlowStore = defineStore("taskFlow", () => {
     empathMapLastProcessedInputs,
     // Do not return the promise directly; instead, expose as a computed getter
     loadTaskFlow,
+    refetchTaskFlow,
     saveTaskFlow,
     debouncedSaveTaskFlow,
     updateNodeData,

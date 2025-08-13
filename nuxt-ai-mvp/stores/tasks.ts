@@ -1,10 +1,8 @@
 import { defineStore } from "pinia";
 import { useSlug } from "../composables/useSlug";
-import type {
-  SupabaseClient,
-  User as SupabaseUser,
-  PostgrestError,
-} from "@supabase/supabase-js";
+import { useSupabaseClient } from "#imports";
+import type { Json } from "~/types/supabase";
+import { ref } from "vue";
 
 // Interface for the problem_statement object within a Task
 interface ProblemStatement {
@@ -44,287 +42,241 @@ interface UpdateProblemStatementPayload {
   // updated_at is handled internally
 }
 
-// Interface for the state of the tasks store
-interface TasksState {
-  tasks: Task[];
-  // Consider adding loading/error states if needed for UI feedback
-  // loading: boolean;
-  // error: string | null;
-}
+export const useTasksStore = defineStore("tasks", () => {
+  const tasks = ref<Task[]>([]);
+  const supabase = useSupabaseClient();
 
-export const useTasksStore = defineStore("tasks", {
-  state: (): TasksState => ({
-    tasks: [],
-    // loading: false,
-    // error: null,
-  }),
-  actions: {
-    async createTask(
-      supabase: SupabaseClient,
-      taskData: CreateTaskPayload
-    ): Promise<Task> {
+  function toProblemStatement(json: any): ProblemStatement {
+    if (json && typeof json === "object") {
       const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      const { generateSlug } = useSlug();
+        title = "",
+        description = "",
+        updated_at = new Date().toISOString(),
+      } = json as any;
+      return { title, description, updated_at };
+    }
+    return { title: "", description: "", updated_at: new Date().toISOString() };
+  }
 
-      if (!user?.id) {
-        throw new Error("Usuário não autenticado para criar tarefa.");
-      }
-      if (!taskData.name) {
-        throw new Error("O nome da tarefa é obrigatório.");
-      }
+  function normalizeTaskRow(row: any): Task {
+    return {
+      ...row,
+      problem_statement: toProblemStatement(row?.problem_statement),
+    } as Task;
+  }
 
-      const initialSlug = generateSlug(taskData.name);
-      let uniqueSlug = initialSlug;
-      let counter = 1;
+  async function createTask(taskData: CreateTaskPayload): Promise<Task> {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    const { generateSlug } = useSlug();
 
-      const initialProblemStatement: ProblemStatement = {
-        title: taskData.name,
-        description: "",
-        updated_at: new Date().toISOString(),
-      };
+    if (!user?.id)
+      throw new Error("Usuário não autenticado para criar tarefa.");
+    if (!taskData.name) throw new Error("O nome da tarefa é obrigatório.");
 
-      while (true) {
-        const { data, error } = await supabase
-          .from("tasks")
-          .insert({
-            name: taskData.name,
-            slug: uniqueSlug,
-            problem_statement: initialProblemStatement,
-            user_id: user.id,
-          })
-          .select()
-          .single<Task>();
+    const initialSlug = generateSlug(taskData.name);
+    let uniqueSlug = initialSlug;
+    let counter = 1;
 
-        if (error) {
-          console.error("Erro ao inserir tarefa:", error);
-          if (error.code === "23505") {
-            // Unique constraint violation
-            uniqueSlug = `${initialSlug}-${counter}`;
-            counter++;
-            continue;
-          }
-          throw new Error(`Falha ao criar tarefa: ${error.message}`);
-        }
-        if (!data) {
-          // Should not happen if error is null, but good practice
-          throw new Error("Falha ao criar tarefa: Nenhum dado retornado.");
-        }
+    const initialProblemStatement: ProblemStatement = {
+      title: taskData.name,
+      description: "",
+      updated_at: new Date().toISOString(),
+    };
 
-        await this.fetchTasks(supabase);
-        return data;
-      }
-    },
-
-    async updateTask(
-      supabase: SupabaseClient,
-      taskId: string,
-      taskData: UpdateTaskPayload
-    ): Promise<Task> {
-      const { generateSlug } = useSlug();
-
-      if (!taskData.name) {
-        throw new Error("O nome da tarefa é obrigatório.");
-      }
-
-      const initialSlug = generateSlug(taskData.name);
-      let uniqueSlug = initialSlug;
-      let counter = 1;
-
-      while (true) {
-        const { data, error } = await supabase
-          .from("tasks")
-          .update({
-            name: taskData.name,
-            slug: uniqueSlug,
-          })
-          .eq("id", taskId)
-          .select()
-          .single<Task>();
-
-        if (error) {
-          console.error("Erro ao atualizar tarefa:", error);
-          if (error.code === "23505") {
-            // Unique constraint violation
-            uniqueSlug = `${initialSlug}-${counter}`;
-            counter++;
-            continue;
-          }
-          throw new Error(`Falha ao atualizar tarefa: ${error.message}`);
-        }
-        if (!data) {
-          throw new Error("Falha ao atualizar tarefa: Nenhum dado retornado.");
-        }
-        await this.fetchTasks(supabase);
-        return data;
-      }
-    },
-
-    async updateTaskProblemStatement(
-      supabase: SupabaseClient,
-      taskId: string,
-      problemData: UpdateProblemStatementPayload
-    ): Promise<Task> {
-      const updatedProblemStatement: ProblemStatement = {
-        title: problemData.title || "", // Default to empty string if undefined
-        description: problemData.description || "", // Default to empty string
-        updated_at: new Date().toISOString(),
-      };
-
-      try {
-        const { data, error } = await supabase
-          .from("tasks")
-          .update({
-            problem_statement: updatedProblemStatement,
-          })
-          .eq("id", taskId)
-          .select()
-          .single<Task>();
-
-        if (error) {
-          console.error("Erro ao atualizar problem_statement:", error);
-          throw new Error(
-            `Falha ao atualizar problem_statement: ${error.message}`
-          );
-        }
-        if (!data) {
-          throw new Error(
-            "Falha ao atualizar problem_statement: Nenhum dado retornado."
-          );
-        }
-
-        const taskIndex = this.tasks.findIndex((t) => t.id === taskId);
-        if (taskIndex !== -1) {
-          // Create a new object for reactivity
-          this.tasks[taskIndex] = {
-            ...this.tasks[taskIndex],
-            problem_statement: { ...updatedProblemStatement }, // Ensure problem_statement is also a new object
-          };
-        }
-        return data;
-      } catch (err: any) {
-        console.error("Erro ao atualizar problem_statement:", err.message);
-        throw err;
-      }
-    },
-
-    async deleteTask(supabase: SupabaseClient, taskId: string): Promise<void> {
-      // First, delete all related surveys
-      const { error: surveyError } = await supabase
-        .from("surveys")
-        .delete()
-        .eq("task_id", taskId);
-
-      if (surveyError) {
-        console.error(
-          "Erro ao excluir surveys relacionados à tarefa:",
-          surveyError
-        );
-        throw new Error(
-          `Falha ao excluir surveys relacionados: ${surveyError.message}`
-        );
-      }
-
-      // Now, delete the task
-      const { error: taskDeleteError } = await supabase
+    while (true) {
+      const { data, error } = await supabase
         .from("tasks")
-        .delete()
-        .eq("id", taskId);
+        .insert({
+          name: taskData.name,
+          slug: uniqueSlug,
+          problem_statement: initialProblemStatement as unknown as Json,
+          user_id: user.id,
+        })
+        .select()
+        .single();
 
-      if (taskDeleteError) {
-        console.error("Erro ao excluir tarefa no Supabase:", taskDeleteError);
-        throw new Error(`Falha ao excluir tarefa: ${taskDeleteError.message}`);
-      }
-
-      await this.fetchTasks(supabase);
-    },
-
-    async fetchTaskBySlug(
-      supabase: SupabaseClient,
-      slug: string
-    ): Promise<Task> {
-      const maxRetries = 3;
-      let attempt = 0;
-
-      while (attempt < maxRetries) {
-        const { data, error } = await supabase
-          .from("tasks")
-          .select("*")
-          .eq("slug", slug)
-          .single<Task>();
-
-        if (error) {
-          console.error(
-            "[tasks.ts] Erro ao buscar tarefa pelo slug:",
-            error.message,
-            error.code
-          );
-          if (error.code === "PGRST116" && attempt < maxRetries - 1) {
-            // PGRST116: "Query returned no rows"
-            console.warn(
-              `Tarefa com slug ${slug} não encontrada, tentando novamente... (tentativa ${
-                attempt + 1
-              })`
-            );
-            await new Promise((resolve) => setTimeout(resolve, 500));
-            attempt++;
-            continue;
-          }
-          throw new Error(`Falha ao buscar tarefa pelo slug: ${error.message}`);
+      if (error) {
+        if ((error as any).code === "23505") {
+          uniqueSlug = `${initialSlug}-${counter++}`;
+          continue;
         }
-        if (!data) {
-          // Should be caught by PGRST116, but as a safeguard
-          throw new Error(
-            `Falha ao buscar tarefa pelo slug ${slug}: Nenhum dado retornado.`
-          );
-        }
-        return data;
+        throw new Error(`Falha ao criar tarefa: ${error.message}`);
       }
+      if (!data)
+        throw new Error("Falha ao criar tarefa: Nenhum dado retornado.");
+
+      await fetchTasks();
+      return normalizeTaskRow(data);
+    }
+  }
+
+  async function updateTask(
+    taskId: string,
+    taskData: UpdateTaskPayload
+  ): Promise<Task> {
+    const { generateSlug } = useSlug();
+    if (!taskData.name) throw new Error("O nome da tarefa é obrigatório.");
+
+    const initialSlug = generateSlug(taskData.name);
+    let uniqueSlug = initialSlug;
+    let counter = 1;
+
+    while (true) {
+      const { data, error } = await supabase
+        .from("tasks")
+        .update({ name: taskData.name, slug: uniqueSlug })
+        .eq("id", taskId)
+        .select()
+        .single();
+
+      if (error) {
+        if ((error as any).code === "23505") {
+          uniqueSlug = `${initialSlug}-${counter++}`;
+          continue;
+        }
+        throw new Error(`Falha ao atualizar tarefa: ${error.message}`);
+      }
+      if (!data)
+        throw new Error("Falha ao atualizar tarefa: Nenhum dado retornado.");
+
+      await fetchTasks();
+      return normalizeTaskRow(data);
+    }
+  }
+
+  async function updateTaskProblemStatement(
+    taskId: string,
+    problemData: UpdateProblemStatementPayload
+  ): Promise<Task> {
+    const updatedProblemStatement: ProblemStatement = {
+      title: problemData.title || "",
+      description: problemData.description || "",
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from("tasks")
+      .update({ problem_statement: updatedProblemStatement as unknown as Json })
+      .eq("id", taskId)
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(`Falha ao atualizar problem_statement: ${error.message}`);
+    }
+    if (!data) {
       throw new Error(
-        `Falha ao buscar tarefa com slug ${slug} após várias tentativas.`
+        "Falha ao atualizar problem_statement: Nenhum dado retornado."
       );
-    },
+    }
 
-    async fetchTask(supabase: SupabaseClient, id: string): Promise<Task> {
+    const idx = tasks.value.findIndex((t) => t.id === taskId);
+    if (idx !== -1) {
+      tasks.value[idx] = {
+        ...tasks.value[idx],
+        problem_statement: { ...updatedProblemStatement },
+      } as Task;
+    }
+    return normalizeTaskRow(data);
+  }
+
+  async function deleteTask(taskId: string): Promise<void> {
+    const { error: surveyError } = await supabase
+      .from("surveys")
+      .delete()
+      .eq("task_id", taskId);
+    if (surveyError) {
+      throw new Error(
+        `Falha ao excluir surveys relacionados: ${surveyError.message}`
+      );
+    }
+
+    const { error: taskDeleteError } = await supabase
+      .from("tasks")
+      .delete()
+      .eq("id", taskId);
+    if (taskDeleteError) {
+      throw new Error(`Falha ao excluir tarefa: ${taskDeleteError.message}`);
+    }
+
+    await fetchTasks();
+  }
+
+  async function fetchTaskBySlug(slug: string): Promise<Task> {
+    const maxRetries = 3;
+    let attempt = 0;
+
+    while (attempt < maxRetries) {
       const { data, error } = await supabase
         .from("tasks")
         .select("*")
-        .eq("id", id)
-        .single<Task>();
+        .eq("slug", slug)
+        .single();
 
       if (error) {
-        console.error("Erro ao buscar tarefa:", error);
-        throw new Error(`Falha ao buscar tarefa: ${error.message}`);
+        if ((error as any).code === "PGRST116" && attempt < maxRetries - 1) {
+          await new Promise((r) => setTimeout(r, 500));
+          attempt++;
+          continue;
+        }
+        throw new Error(`Falha ao buscar tarefa pelo slug: ${error.message}`);
       }
       if (!data) {
         throw new Error(
-          `Falha ao buscar tarefa com id ${id}: Nenhum dado retornado.`
+          `Falha ao buscar tarefa pelo slug ${slug}: Nenhum dado retornado.`
         );
       }
-      return data;
-    },
+      return normalizeTaskRow(data);
+    }
+    throw new Error(
+      `Falha ao buscar tarefa com slug ${slug} após várias tentativas.`
+    );
+  }
 
-    async fetchTasks(supabase: SupabaseClient): Promise<Task[]> {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user?.id) {
-        this.tasks = [];
-        return [];
-      }
-      const { data, error } = await supabase
-        .from("tasks")
-        .select("*")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false });
+  async function fetchTask(id: string): Promise<Task> {
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("*")
+      .eq("id", id)
+      .single();
 
-      if (error) {
-        console.error("Erro ao buscar tarefas:", error);
-        throw new Error(`Falha ao buscar tarefas: ${error.message}`);
-      }
-      this.tasks = (data as Task[]) || [];
-      return this.tasks;
-    },
-  },
+    if (error) throw new Error(`Falha ao buscar tarefa: ${error.message}`);
+    if (!data)
+      throw new Error(
+        `Falha ao buscar tarefa com id ${id}: Nenhum dado retornado.`
+      );
+    return normalizeTaskRow(data);
+  }
+
+  async function fetchTasks(): Promise<Task[]> {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user?.id) {
+      tasks.value = [];
+      return [];
+    }
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
+
+    if (error) throw new Error(`Falha ao buscar tarefas: ${error.message}`);
+    tasks.value = (data || []).map((row: any) => normalizeTaskRow(row));
+    return tasks.value;
+  }
+
+  return {
+    tasks,
+    createTask,
+    updateTask,
+    updateTaskProblemStatement,
+    deleteTask,
+    fetchTaskBySlug,
+    fetchTask,
+    fetchTasks,
+  };
 });

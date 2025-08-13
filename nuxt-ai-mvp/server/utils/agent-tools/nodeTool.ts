@@ -8,17 +8,18 @@ import { ProblemSchema } from "../../schema/problem";
 import { NoteSchema } from "../../schema/note";
 import { DataSourceSchema } from "../../schema/dataSource";
 
-// Repositório (ajuste import p/ seu projeto)
+// Service central (delegando ao repositório)
 import {
-  getNodeById,
-  updateNodeDataInFlow,
-  createNodeInFlow,
-  deleteNodeFromFlow,
-} from "../../../repositories/flows";
+  getNodeById as svcGetNodeById,
+  updateNodeDataInFlow as svcUpdateNodeDataInFlow,
+  createNodeInFlow as svcCreateNodeInFlow,
+  deleteNodeFromFlow as svcDeleteNodeFromFlow,
+} from "~/server/services/taskFlowService";
 
 type Base = {
   taskId: string;
   nodeType: string; // "problem" | "note" | "survey" | ...
+  event?: any;
 };
 
 // Create
@@ -113,11 +114,12 @@ export async function nodeTool(params: Params) {
     }
 
     // persistir
-    const created = await createNodeInFlow(
+    const created = await svcCreateNodeInFlow(
+      (params as any)?.event ?? null,
       taskId,
       nodeType,
       parsed.data,
-      (params as CreateParams).parentId ?? null
+      (params as CreateParams).parentId ?? undefined
     );
     return {
       ok: true,
@@ -133,7 +135,11 @@ export async function nodeTool(params: Params) {
   // ==== DELETE ==============================================================
   if (params.operation === "delete") {
     const { nodeId } = params as DeleteParams;
-    const currentNode = await getNodeById(taskId, nodeId);
+    const currentNode = await svcGetNodeById(
+      (params as any)?.event ?? null,
+      taskId,
+      nodeId
+    );
     if (!currentNode) return { ok: false, error: "NodeNotFound" };
 
     if (policy.needsApproval && !params.isApprovedOperation) {
@@ -148,7 +154,7 @@ export async function nodeTool(params: Params) {
       };
     }
 
-    await deleteNodeFromFlow(taskId, nodeId);
+    await svcDeleteNodeFromFlow((params as any)?.event ?? null, taskId, nodeId);
     return {
       ok: true,
       deleted: true,
@@ -162,7 +168,11 @@ export async function nodeTool(params: Params) {
 
   // ==== UPDATE / PATCH ======================================================
   const { nodeId } = params as UpdateParams | PatchParams;
-  let currentNode = await getNodeById(taskId, nodeId).catch(() => null as any);
+  let currentNode = await svcGetNodeById(
+    (params as any)?.event ?? null,
+    taskId,
+    nodeId
+  ).catch(() => null as any);
 
   // Fallback: usa canvasContext quando o repositório ainda não tem o nó
   if (!currentNode && (params as any)?.canvasContext) {
@@ -244,7 +254,12 @@ export async function nodeTool(params: Params) {
     };
   }
 
-  const updatedNode = await updateNodeDataInFlow(taskId, nodeId, nextData);
+  const updatedNode = await svcUpdateNodeDataInFlow(
+    (params as any)?.event ?? null,
+    taskId,
+    nodeId,
+    nextData
+  );
   return {
     ok: true,
     updated: true,

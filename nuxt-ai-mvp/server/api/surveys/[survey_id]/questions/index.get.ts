@@ -1,6 +1,6 @@
-import { serverSupabaseClient } from '#supabase/server';
-import type { SupabaseClient } from '@supabase/supabase-js';
-import type { H3Event } from 'h3';
+import { serverSupabase } from "~/server/utils/supabase";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { H3Event } from "h3";
 
 // Define a type for the event context parameters
 interface EventParams {
@@ -33,15 +33,15 @@ export default defineEventHandler(
 
     if (!survey_id) {
       event.node.res.statusCode = 400; // Bad Request
-      return { error: 'survey_id is required' };
+      return { error: "survey_id is required" };
     }
 
-    const supabase: SupabaseClient = await serverSupabaseClient(event);
+    const supabase: SupabaseClient = await serverSupabase();
     const { data, error } = await supabase
-      .from('questions')
-      .select('*') // Consider selecting specific columns for better performance and type safety
-      .eq('survey_id', survey_id)
-      .order('order', { ascending: true });
+      .from("questions")
+      .select("*") // Consider selecting specific columns for better performance and type safety
+      .eq("survey_id", survey_id)
+      .order("order", { ascending: true });
 
     if (error) {
       console.error(`Error fetching questions for survey ${survey_id}:`, error);

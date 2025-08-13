@@ -38,6 +38,21 @@ export const toolLookup: Record<string, any> = allNodeTypes.reduce(
   {} as Record<string, any>
 );
 
+// Build synonyms from catalog aliases so the model can map natural language to types
+const aliasPairs: Array<{ alias: string; type: string }> = [];
+for (const type of Object.keys(nodeCatalog)) {
+  const aliases: string[] = (nodeCatalog as any)[type]?.aliases ?? [];
+  aliases
+    .filter((a) => typeof a === "string" && a.trim())
+    .forEach((alias) => aliasPairs.push({ alias: alias.toLowerCase(), type }));
+}
+const synonymsBlock =
+  aliasPairs.length > 0
+    ? "\nSinônimos (mapear para target.type correspondente):\n" +
+      aliasPairs.map((a) => `- "${a.alias}" => "${a.type}"`).join("\n") +
+      "\n"
+    : "";
+
 // ------------------------------------------------------------------------------------------------
 // 2. Zod schema for the classifier output
 // ------------------------------------------------------------------------------------------------
@@ -72,6 +87,8 @@ Regras:
 - Se a ação for "create" ou "update", TODOS os campos de dados DEVEM estar dentro de "args.newData".
 - Se o pedido for para ajudar, refininar ou reescrever conteúdo, defina "refinement": true.
 - Se a solicitação for uma ação direta (create/update/delete) SEM pedido explícito de reescrita ou melhoria, mantenha "refinement": false.
+- Se houver menções que sejam sinônimos de tipos conhecidos, mapeie para o tipo correto.
+${synonymsBlock}
 
 ### Exemplos
 Usuário: "mude o título do problema para Mangaba"
@@ -147,12 +164,28 @@ CANVAS: ${JSON.stringify(canvasContext)}
     }
 
     // ── Dynamic validation ─────────────────────────────────────────────────────────
+    // Normalize common casing/alias issues: "datasource", "data", "card de dados" => "dataSource"
+    if (parsed?.target?.type) {
+      const x = String(parsed.target.type).toLowerCase();
+      if (
+        [
+          "datasource",
+          "data",
+          "data_card",
+          "card de dados",
+          "card-de-dados",
+          "data source",
+        ].includes(x)
+      ) {
+        parsed.target.type = "dataSource";
+      }
+    }
     if (!allActions.includes(parsed.action)) {
       parsed.action = "chat";
     }
     if (
       parsed.target?.type &&
-      !allNodeTypes.includes(parsed.target.type as any)
+      !(allNodeTypes as string[]).includes(parsed.target.type as any)
     ) {
       delete parsed.target;
     }
@@ -164,11 +197,6 @@ CANVAS: ${JSON.stringify(canvasContext)}
       actionsRequiringTarget.includes(parsed.action) &&
       !parsed.target?.type
     ) {
-      parsed.action = "chat";
-    }
-
-    // Extra safety: deletar SEM id explícito pode gerar ambiguidade
-    if (parsed.action === "delete" && !parsed.target?.id) {
       parsed.action = "chat";
     }
 

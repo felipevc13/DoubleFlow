@@ -23,6 +23,10 @@ export async function agentNode(
 
   const { action, target, args, refinement } = classification;
 
+  // Normaliza o tipo vindo do classificador (ex.: "datasource" -> "dataSource")
+  const rawType = target?.type as string | undefined;
+  const targetType = rawType === "datasource" ? "dataSource" : rawType;
+
   // Rota 1: Refinamento de Conteúdo
   if (refinement && target?.type === "problem") {
     consola.info(
@@ -55,7 +59,7 @@ export async function agentNode(
   // Rota 2: Se a intenção é uma chamada de ferramenta (criar, deletar, etc.)
   // 🚧 Política: nó "problem" não pode ser criado nem deletado
   if (
-    target?.type === "problem" &&
+    targetType === "problem" &&
     (action === "create" || action === "delete")
   ) {
     return {
@@ -71,7 +75,7 @@ export async function agentNode(
       next_step: "chatNode" as any,
     };
   }
-  const actionId = `${target?.type}.${action}`;
+  const actionId = `${targetType}.${action}`;
   const meta = toolLookup[actionId];
 
   if (meta) {
@@ -86,21 +90,25 @@ export async function agentNode(
       const lastOfType = state.canvasContext?.nodes
         ?.slice()
         ?.reverse()
-        ?.find((n: any) => n.type === target?.type);
+        ?.find((n: any) => n.type === targetType);
       resolvedNodeId = lastOfType?.id;
     }
 
     // Monta parâmetros esperados pelo nodeTool (server‑driven)
     const parameters: any = {
       taskId: state.taskId,
-      nodeType: target?.type,
+      nodeType: targetType,
       operation: action, // "create" | "update" | "patch" | "delete"
     };
 
     if (action === "create") {
-      parameters.newData = filledArgs.newData ?? {};
+      // default amigável para dataSource
+      parameters.newData =
+        targetType === "dataSource"
+          ? { title: "Card de Dados", ...(filledArgs.newData ?? {}) }
+          : filledArgs.newData ?? {};
       parameters.parentId =
-        filledArgs.sourceNodeId ?? lastNode?.id ?? problemId ?? null;
+        filledArgs.sourceNodeId ?? lastNode?.id ?? problemId ?? undefined;
     } else if (action === "update") {
       parameters.nodeId = resolvedNodeId;
       parameters.newData = filledArgs.newData ?? args?.newData ?? {};

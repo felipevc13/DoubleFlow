@@ -1,21 +1,29 @@
 // composables/taskflow/useTaskFlowPersistence.ts
 import { ref } from "vue";
-import { useSupabaseClient, useSupabaseUser } from "#imports";
-import type { TaskFlowNode, TaskFlowEdge, Viewport } from "~/types/taskflow";
+import { useSupabaseClient } from "#imports";
+
+type TaskFlowNode = Record<string, any>;
+type TaskFlowEdge = Record<string, any>;
+type Viewport = Record<string, any>;
 
 export function useTaskFlowPersistence() {
-  const supabase = useSupabaseClient();
   const saving = ref(false);
+  const supabase = useSupabaseClient();
+  async function getCurrentUser() {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) throw error;
+    return data.user;
+  }
 
   async function loadFlow(taskId: string) {
-    const user = useSupabaseUser();
-    if (!user.value) throw new Error("Usuário não autenticado");
+    const user = await getCurrentUser();
+    if (!user) throw new Error("Usuário não autenticado");
 
     const { data, error } = await supabase
       .from("task_flows")
       .select("*")
       .eq("id", taskId)
-      .eq("user_id", user.value.id)
+      .eq("user_id", user.id)
       .maybeSingle(); // Changed from .single()
 
     if (error) {
@@ -86,9 +94,9 @@ export function useTaskFlowPersistence() {
     if (nodes.length === 0 && edges.length === 0) {
       return;
     }
-    const user = useSupabaseUser();
-    const supabase = useSupabaseClient();
-    if (!user.value) return;
+    const user = await getCurrentUser();
+    // Using the top-level `supabase` client created via runtime config
+    if (!user) return;
 
     saving.value = true;
     try {
@@ -97,7 +105,7 @@ export function useTaskFlowPersistence() {
         .upsert([
           {
             id: taskId,
-            user_id: user.value.id,
+            user_id: user.id,
             task_id: taskId,
             nodes: JSON.stringify(nodes),
             edges: JSON.stringify(edges),

@@ -1,4 +1,4 @@
-import { serverSupabaseClient, serverSupabaseUser } from "#supabase/server";
+import { getSupabaseAuth } from "~/server/utils/supabase";
 import type {
   SupabaseClient,
   User as SupabaseUser,
@@ -43,7 +43,7 @@ interface ErrorResponse {
 
 export default defineEventHandler(
   async (event: H3Event): Promise<SuccessResponse | ErrorResponse> => {
-    const supabase: SupabaseClient = await serverSupabaseClient(event);
+    const { supabase, user } = await getSupabaseAuth(event);
     const body = await readBody<RequestBody>(event);
     const { task_id } = body;
 
@@ -52,8 +52,6 @@ export default defineEventHandler(
       event.node.res.statusCode = 400; // Bad Request
       return { error: "task_id is required" };
     }
-
-    const user: SupabaseUser | null = await serverSupabaseUser(event);
     if (!user?.id) {
       event.node.res.statusCode = 401; // Unauthorized
       return { error: "Usuário não autenticado" };
@@ -80,14 +78,18 @@ export default defineEventHandler(
       return { error: "Failed to create survey." };
     }
 
+    // Normalize possibly-null DB fields
+    const taskIdStr: string = (survey.task_id ?? task_id) as string;
+    const userIdStr: string = (survey.user_id ?? user.id) as string;
+
     // Create intro and thanks blocks
     const introDefault: QuestionBlock = {
       survey_id: survey.id,
-      task_id: survey.task_id,
+      task_id: taskIdStr,
       type: "intro",
       questionText:
         "Bem-vindo à pesquisa! Por favor, leia as instruções antes de começar.",
-      user_id: user.id,
+      user_id: userIdStr,
       extra: {
         title: "Você foi convidado para participar de um estudo.",
         description:
@@ -97,10 +99,10 @@ export default defineEventHandler(
 
     const thanksDefault: QuestionBlock = {
       survey_id: survey.id,
-      task_id: survey.task_id,
+      task_id: taskIdStr,
       type: "thanks",
       questionText: "Obrigado por participar da pesquisa!",
-      user_id: user.id,
+      user_id: userIdStr,
       extra: {
         title: "Obrigado!",
         description:
@@ -116,10 +118,21 @@ export default defineEventHandler(
       console.error("[API /api/surveys] blockError:", blockError);
       // Decide if the survey creation should be rolled back or if returning the survey with an error is acceptable
       event.node.res.statusCode = 500; // Internal Server Error
-      return { error: blockError.message, survey }; // Return survey as it was created
+      const normalizedSurvey: Survey = {
+        ...(survey as any),
+        task_id: taskIdStr,
+        user_id: userIdStr,
+      };
+      return { error: blockError.message, survey: normalizedSurvey }; // Return survey as it was created
     }
 
+    const normalizedSurvey: Survey = {
+      ...(survey as any),
+      task_id: taskIdStr,
+      user_id: userIdStr,
+    };
+
     event.node.res.statusCode = 201; // Created
-    return { survey };
+    return { survey: normalizedSurvey };
   }
 );

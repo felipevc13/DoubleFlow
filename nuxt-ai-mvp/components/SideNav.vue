@@ -73,33 +73,63 @@
   </aside>
 </template>
 
-<script setup>
+<script setup lang="ts">
+import { ref, onMounted, onBeforeUnmount } from "vue";
+import { navigateTo } from "#imports";
 import { useRoute } from "vue-router";
 import { useSidenavStore } from "../stores/sidenav"; // Importar a nova store
 import Logo from "./icon/Logo.vue";
 import CloseSide from "./icon/CloseSide.vue";
 import OpenSide from "./icon/OpenSide.vue";
 import { BookOpenIcon } from "@heroicons/vue/24/outline";
-import { onMounted } from "vue";
-import { useSupabaseUser, useSupabaseClient } from "#imports";
+import { useSupabaseClient } from "#imports";
+import type { User } from "@supabase/supabase-js";
 
 const route = useRoute();
 const sidenavStore = useSidenavStore();
-const user = useSupabaseUser(); // Get the ref, access .value where needed
-const supabase = useSupabaseClient(); // Use the composable
+const supabase = useSupabaseClient(); // nosso composable (client-side singleton)
+const user = ref<User | null>(null);
+let authUnsub: (() => void) | null = null;
 
-async function handleLogout() {
-  if (user.value) {
-    // Check if user exists before signing out
-    await supabase.auth.signOut();
-    window.location.href = "/login";
+onMounted(async () => {
+  try {
+    // Get current user once
+    const { data } = await supabase.auth.getUser();
+    user.value = data?.user ?? null;
+
+    // Subscribe to auth changes to keep UI in sync (login/logout/token refresh)
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        user.value = session?.user ?? null;
+      }
+    );
+    authUnsub = listener?.subscription?.unsubscribe ?? null;
+  } catch (err) {
+    console.error("[SideNav] auth.getUser error:", err);
+    user.value = null;
   }
-}
 
-// Inicializar o estado da sidebar ao carregar o componente
-onMounted(() => {
+  // Initialize sidebar state on mount
   sidenavStore.initializeSidebar();
 });
+
+onBeforeUnmount(() => {
+  if (authUnsub) {
+    try {
+      authUnsub();
+    } catch {}
+    authUnsub = null;
+  }
+});
+
+async function handleLogout() {
+  try {
+    await supabase.auth.signOut();
+  } finally {
+    // Use Nuxt router helper to avoid full page reload
+    navigateTo("/login");
+  }
+}
 
 defineEmits(["open-task-form"]);
 </script>

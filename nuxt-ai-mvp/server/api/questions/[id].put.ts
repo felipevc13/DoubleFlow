@@ -1,4 +1,4 @@
-import { serverSupabaseClient } from "#supabase/server";
+import { serverSupabase } from "~/server/utils/supabase";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { H3Event } from "h3";
 
@@ -43,7 +43,7 @@ export default defineEventHandler(
       return { error: "question id is required" };
     }
 
-    const supabase: SupabaseClient = await serverSupabaseClient(event);
+    const supabase: SupabaseClient = serverSupabase();
 
     const { data, error } = await supabase
       .from("questions")
