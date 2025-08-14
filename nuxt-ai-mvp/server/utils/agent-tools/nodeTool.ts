@@ -98,12 +98,17 @@ export async function nodeTool(params: Params) {
     // aprovação
     if (policy.needsApproval && !params.isApprovedOperation) {
       const summary = buildCreateSummary(nodeType, draft);
+      const { event: _omit, ...rest } = params as any;
       return {
         pending_confirmation: {
           render: policy.approvalRender,
           summary,
           diff: null,
-          parameters: { ...params, isApprovedOperation: true },
+          parameters: {
+            ...rest,
+            isApprovedOperation: true,
+            event: "[POST] /api/ai/agentChat",
+          },
         },
       };
     }
@@ -163,12 +168,17 @@ export async function nodeTool(params: Params) {
         nodeType,
         forSummary ?? { id: nodeId, data: {} }
       );
+      const { event: _omit, ...rest } = params as any;
       return {
         pending_confirmation: {
           render: policy.approvalRender,
           summary,
           diff: null,
-          parameters: { ...params, isApprovedOperation: true },
+          parameters: {
+            ...rest,
+            isApprovedOperation: true,
+            event: "[POST] /api/ai/agentChat",
+          },
         },
       };
     }
@@ -250,7 +260,14 @@ export async function nodeTool(params: Params) {
     draft = { ...res.newDocument, updated_at: new Date().toISOString() };
   }
 
-  const parsed = schema.safeParse(draft);
+  // Allow only editable fields (plus 'updated_at') to proceed to validation,
+  // preventing patches from touching non-editable fields.
+  const allowed = new Set([...(cfg?.fields.editable ?? []), "updated_at"]);
+  const nextDraft = Object.fromEntries(
+    Object.entries(draft).filter(([k]) => allowed.has(k))
+  );
+
+  const parsed = schema.safeParse(nextDraft);
   if (!parsed.success)
     return {
       ok: false,
@@ -269,12 +286,17 @@ export async function nodeTool(params: Params) {
 
   if (policy.needsApproval && !params.isApprovedOperation) {
     const summary = buildUpdateSummary(nodeType, diff, nextData);
+    const { event: _omit, ...rest } = params as any;
     return {
       pending_confirmation: {
         render: policy.approvalRender,
         summary,
         diff,
-        parameters: { ...params, isApprovedOperation: true },
+        parameters: {
+          ...rest,
+          isApprovedOperation: true,
+          event: "[POST] /api/ai/agentChat",
+        },
       },
     };
   }

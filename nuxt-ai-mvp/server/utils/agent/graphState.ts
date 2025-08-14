@@ -14,6 +14,12 @@ export interface PlanStep {
   rationale: string; // A justificativa da IA para este passo
 }
 
+// Resultado do passo de ASK_CLARIFY
+export type ClarifyResult = {
+  kind: "ASK_CLARIFY";
+  answers: Record<string, any>;
+};
+
 // Proposta de ação aguardando confirmação do usuário (server‑driven)
 export interface ActionProposal {
   tool_name: string; // normalmente "nodeTool"
@@ -22,6 +28,13 @@ export interface ActionProposal {
   summary: string; // resumo curto para UI
   diff?: any; // estrutura de diff (se houver)
   effects?: SideEffect[]; // efeitos sugeridos
+  kind?: "ASK_CLARIFY" | "PROPOSE_PATCH"; // tipo de proposta
+  questions?: Array<{
+    id: string;
+    label: string;
+    placeholder?: string;
+    required?: boolean;
+  }>; // para ASK_CLARIFY
 }
 
 // O estado unificado para o novo grafo híbrido
@@ -52,6 +65,9 @@ export interface PlanExecuteState {
   intermediate_steps: AgentStep[];
   sideEffects: SideEffect[];
   pending_confirmation?: ActionProposal | null;
+
+  // Resultado de perguntas de esclarecimento (ASK_CLARIFY)
+  clarify_result?: ClarifyResult | null;
 
   // Execução direta (catálogo)
   pending_execute?: {
@@ -126,6 +142,11 @@ export const PlanExecuteAnnotation = Annotation.Root({
       currentValue: ActionProposal | null,
       newValue: ActionProposal | null
     ) => newValue ?? null,
+    default: () => null,
+  }),
+  clarify_result: Annotation<ClarifyResult | null>({
+    reducer: (_current: ClarifyResult | null, incoming: ClarifyResult | null) =>
+      incoming ?? null,
     default: () => null,
   }),
   pending_execute: Annotation<{

@@ -56,6 +56,16 @@ const synonymsBlock =
 // ------------------------------------------------------------------------------------------------
 // 2. Zod schema for the classifier output
 // ------------------------------------------------------------------------------------------------
+const ArgsSchema = z
+  .object({
+    // quando ação direta:
+    newData: z.record(z.any()).optional(),
+
+    // quando refinamento:
+    scopedTo: z.enum(["title", "description", "both"]).optional(),
+  })
+  .partial();
+
 export const IntentGenericSchema = z.object({
   target: z
     .object({
@@ -64,7 +74,7 @@ export const IntentGenericSchema = z.object({
     })
     .optional(),
   action: z.string(), // validated later
-  args: z.any().optional(),
+  args: ArgsSchema.optional(),
   refinement: z.boolean().optional().default(false),
 });
 
@@ -85,7 +95,8 @@ Regras:
 - Se a ação for específica a um nó, inclua "target.type" (por ex.: "problem").
 - Se o usuário mencionar um id de nó, inclua "target.id".
 - Se a ação for "create" ou "update", TODOS os campos de dados DEVEM estar dentro de "args.newData".
-- Se o pedido for para ajudar, refininar ou reescrever conteúdo, defina "refinement": true.
+- Se o pedido for para ajudar, refinar, reescrever, melhorar, clarificar, ou pedir sugestões, defina "refinement": true.
+- Quando "refinement" for true, inclua em "args.scopedTo" um destes: "title", "description" ou "both".
 - Se a solicitação for uma ação direta (create/update/delete) SEM pedido explícito de reescrita ou melhoria, mantenha "refinement": false.
 - Se houver menções que sejam sinônimos de tipos conhecidos, mapeie para o tipo correto.
 ${synonymsBlock}
@@ -109,7 +120,6 @@ Resposta:
   "refinement": false
 }
 
-
 Usuário: "apaga este data source"
 Resposta:
 {
@@ -118,11 +128,26 @@ Resposta:
   "args": {},
   "refinement": false
 }
+
+Usuário: "Me ajuda a refinar o problema (só o título)"
+Resposta:
+{
+  "target": { "type": "problem" },
+  "action": "update",
+  "args": { "scopedTo": "title" },
+  "refinement": true
+}
 `.trim();
 
 // ------------------------------------------------------------------------------------------------
 // 4. LLM models & cache
 // ------------------------------------------------------------------------------------------------
+function pickUniqueNodeId(ctx: any, type: string): string | undefined {
+  const nodes: any[] = Array.isArray(ctx?.nodes) ? ctx.nodes : [];
+  const hits = nodes.filter((n) => n?.type === type);
+  return hits.length === 1 ? hits[0].id : undefined;
+}
+
 const modelFlash = new ChatGoogleGenerativeAI({
   model: "gemini-1.5-flash-latest",
   apiKey: process.env.GEMINI_API_KEY,
@@ -180,6 +205,14 @@ CANVAS: ${JSON.stringify(canvasContext)}
         parsed.target.type = "dataSource";
       }
     }
+    // extra normalizações comuns
+    if (parsed?.target?.type) {
+      const y = String(parsed.target.type).toLowerCase();
+      if (["problema", "problem", "issue"].includes(y))
+        parsed.target.type = "problem";
+      if (["análise", "analise", "analysis"].includes(y))
+        parsed.target.type = "analysis";
+    }
     if (!allActions.includes(parsed.action)) {
       parsed.action = "chat";
     }
@@ -198,6 +231,15 @@ CANVAS: ${JSON.stringify(canvasContext)}
       !parsed.target?.type
     ) {
       parsed.action = "chat";
+    }
+
+    // se ação exige id e há exatamente um nó do tipo, preenche automaticamente
+    const needsId = parsed.action === "delete" || parsed.action === "update";
+    if (needsId && parsed.target?.type && !parsed.target?.id) {
+      const onlyId = pickUniqueNodeId(canvasContext, parsed.target.type);
+      if (onlyId) {
+        parsed.target = { ...parsed.target, id: onlyId };
+      }
     }
 
     return parsed;

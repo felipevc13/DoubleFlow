@@ -45,12 +45,14 @@ export async function humanApprovalNode(
 
   const existingMessages = state.messages || [];
   const proposal = (state as any).pending_confirmation;
+  const proposalKind = (proposal as any)?.kind;
+  const isAskClarify = proposalKind === "ASK_CLARIFY";
 
   // Normalize proposal for alignment with pending_execute, if present
   const pendingExec = (state as any).pending_execute;
   let normalizedProposal: any = proposal ? { ...(proposal as any) } : null;
 
-  if (proposal && pendingExec?.parameters) {
+  if (!isAskClarify && proposal && pendingExec?.parameters) {
     const execParams = pendingExec.parameters;
 
     // Find current node data to compute proper diff
@@ -93,6 +95,10 @@ export async function humanApprovalNode(
       {
         render: (toLog as any)?.render, // "chat" | "modal"
         summary: (toLog as any)?.summary,
+        kind: (toLog as any)?.kind,
+        questionsCount: Array.isArray((toLog as any)?.questions)
+          ? (toLog as any)?.questions.length
+          : undefined,
         hasDiff: Boolean((toLog as any)?.diff),
         op: (toLog as any)?.parameters?.operation, // create|update|patch|delete
         nodeType: (toLog as any)?.parameters?.nodeType,
@@ -119,6 +125,55 @@ export async function humanApprovalNode(
   ) {
     const confirmed = Boolean((decision as any).confirmed);
 
+    // Handle ASK_CLARIFY flow: do NOT execute tools yet; return answers to the agent
+    if (isAskClarify) {
+      if (confirmed) {
+        const answers = (decision as any)?.answers ?? {};
+        const retForClarify: Partial<PlanExecuteState> = {
+          pending_confirmation: null,
+          pending_execute: null,
+          // hand back answers so agentNode can move to PROPOSE_PATCH phase
+          // (agentNode should read `clarify_result` if present)
+          ...(answers
+            ? { clarify_result: { kind: "ASK_CLARIFY", answers } as any }
+            : {}),
+          sideEffects: [
+            { type: "CLOSE_MODAL", payload: {} } as any,
+            {
+              type: "POST_MESSAGE",
+              payload: {
+                text: "Obrigado! Vou propor uma atualização com base nas suas respostas.",
+              },
+            } as any,
+          ],
+          input: "",
+          messages: existingMessages,
+        };
+        consola.info(
+          "[humanApprovalNode] ASK_CLARIFY confirmado. Respostas recebidas e devolvidas ao agente."
+        );
+        return retForClarify;
+      } else {
+        const retCanceled: Partial<PlanExecuteState> = {
+          pending_confirmation: null,
+          pending_execute: null,
+          sideEffects: [
+            { type: "CLOSE_MODAL", payload: {} } as any,
+            {
+              type: "POST_MESSAGE",
+              payload: {
+                text: "Ok! Não vou prosseguir com o refinamento agora.",
+              },
+            } as any,
+          ],
+          input: "",
+          messages: existingMessages,
+        };
+        consola.info("[humanApprovalNode] ASK_CLARIFY cancelado pelo usuário.");
+        return retCanceled;
+      }
+    }
+
     if (confirmed) {
       // Use exactly the approved action coming from the client resume (front-end)
       const approved = (decision as any).approved_action ?? {
@@ -126,6 +181,34 @@ export async function humanApprovalNode(
         parameters: (proposal as any)?.parameters ?? {},
         displayMessage: "Ação aprovada",
       };
+
+      const op = (approved as any)?.parameters?.operation;
+      const nodeType = (approved as any)?.parameters?.nodeType;
+      const targetNodeId = (approved as any)?.parameters?.nodeId;
+
+      // Front-only path for delete operations (no tool execution)
+      if (op === "delete") {
+        const retForDelete: Partial<PlanExecuteState> = {
+          pending_confirmation: null,
+          pending_execute: null,
+          sideEffects: [
+            { type: "CLOSE_MODAL", payload: {} } as any,
+            // Front-end should handle this by removing the node and updating edges/state locally
+            {
+              type: "DELETE_NODE",
+              payload: { nodeId: targetNodeId, nodeType },
+            } as any,
+            { type: "POST_MESSAGE", payload: { text: "✅ Deletado." } } as any,
+          ],
+          input: "",
+          messages: existingMessages,
+        };
+        consola.info(
+          "[humanApprovalNode] Confirmado (front-only delete). Emitting DELETE_NODE for:",
+          JSON.stringify({ nodeType, nodeId: targetNodeId }, null, 2)
+        );
+        return retForDelete;
+      }
 
       // Strong safety: log what will actually be executed
       try {
