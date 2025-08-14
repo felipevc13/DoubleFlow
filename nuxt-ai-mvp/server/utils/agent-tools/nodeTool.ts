@@ -132,15 +132,37 @@ export async function nodeTool(params: Params) {
   // ==== DELETE ==============================================================
   if (params.operation === "delete") {
     const { nodeId } = params as DeleteParams;
-    const currentNode = await svcGetNodeById(
-      (params as any)?.event ?? null,
-      taskId,
-      nodeId
-    );
-    if (!currentNode) return { ok: false, error: "NodeNotFound" };
+
+    // Proteção básica contra remoção do problema
+    if (nodeType === "problem" && nodeId === "problem-1") {
+      return { ok: false, error: "CannotDeleteProblemNode" };
+    }
+
+    // Para aprovação: tenta obter dados do nó a partir do canvasContext,
+    // mas a remoção em si será sempre delegada ao cliente (UI/store).
+    let forSummary: any = null;
+    const cc = (params as any)?.canvasContext;
+    if (cc) {
+      if (Array.isArray(cc.nodes)) {
+        forSummary = cc.nodes.find((n: any) => n?.id === nodeId) ?? null;
+      }
+      if (!forSummary && cc?.problem_statement && nodeType === "problem") {
+        forSummary = {
+          id: nodeId,
+          type: "problem",
+          data: {
+            title: cc.problem_statement.title,
+            description: cc.problem_statement.description,
+          },
+        } as any;
+      }
+    }
 
     if (policy.needsApproval && !params.isApprovedOperation) {
-      const summary = buildDeleteSummary(nodeType, currentNode);
+      const summary = buildDeleteSummary(
+        nodeType,
+        forSummary ?? { id: nodeId, data: {} }
+      );
       return {
         pending_confirmation: {
           render: policy.approvalRender,
@@ -151,6 +173,7 @@ export async function nodeTool(params: Params) {
       };
     }
 
+    // Delegar: quem deleta é o cliente (mesmo pipeline do botão de lixeira)
     return {
       ok: true,
       scheduled: true,

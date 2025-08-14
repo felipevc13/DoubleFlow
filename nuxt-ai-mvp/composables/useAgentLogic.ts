@@ -400,6 +400,34 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
                     break;
                   }
 
+                  if (op === "delete") {
+                    const targetId = p?.nodeId;
+                    if (!targetId) {
+                      console.warn("nodeTool/delete: nodeId ausente.");
+                      messages.value.push({
+                        role: "system",
+                        content: "Não foi possível deletar: nodeId ausente.",
+                      });
+                      break;
+                    }
+
+                    // Salvaguarda: não permitir deletar o nó de problema
+                    const targetNode = taskFlowStore.nodes.find(
+                      (n) => n.id === targetId
+                    );
+                    if (targetNode?.type === "problem") {
+                      messages.value.push({
+                        role: "system",
+                        content: "O card de Problema não pode ser deletado.",
+                      });
+                      break;
+                    }
+
+                    await runAgentAction({ type: "delete", nodeId: targetId });
+                    modalStore.closeModal();
+                    break;
+                  }
+
                   // If other operations arrive via nodeTool in the future, fall back for now
                   console.warn("nodeTool: operação não suportada:", op);
                   messages.value.push({
