@@ -1,4 +1,5 @@
 import type { PlanExecuteState } from "../graphState";
+import type { H3Event } from "h3";
 import { consola } from "consola";
 import { availableTools } from "~/server/utils/agent-tools";
 import type { SideEffect } from "~/lib/sideEffects";
@@ -21,6 +22,9 @@ export async function toolNode( // Renomeado de executeNode
 ): Promise<Partial<PlanExecuteState>> {
   consola.info("[toolNode] Estado RECEBIDO:", JSON.stringify(state, null, 2));
   const actionToExecute = (state as any).pending_execute;
+
+  const event: H3Event | null =
+    (config as any)?.configurable?.extra?.event ?? null;
 
   if (!actionToExecute) {
     consola.warn(
@@ -52,7 +56,10 @@ export async function toolNode( // Renomeado de executeNode
     let result: any;
     if (typeof tool === "function") {
       // Tool exportada como função (ex.: nodeTool)
-      result = await (tool as any)(actionToExecute.parameters);
+      result = await (tool as any)({
+        ...(actionToExecute.parameters || {}),
+        event,
+      });
     } else if (tool && typeof (tool as any).invoke === "function") {
       // LangChain tool com .invoke
       result = await (tool as any).invoke(actionToExecute.parameters, config);

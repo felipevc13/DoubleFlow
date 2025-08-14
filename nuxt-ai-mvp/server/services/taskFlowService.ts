@@ -20,6 +20,12 @@ import {
   type NodeRecord,
 } from "~/repositories/flows";
 
+import { getSupabase, serverSupabaseService } from "~/server/utils/supabase";
+
+function getDb(event?: H3Event | null) {
+  return event ? getSupabase(event) : serverSupabaseService();
+}
+
 /* -------------------------------------------------------------------------- */
 /* Public API (compatível)                                                    */
 /* -------------------------------------------------------------------------- */
@@ -29,7 +35,7 @@ import {
  * Agora passamos o `event` para o repositório.
  */
 export async function getFlowByTaskId(
-  event: H3Event,
+  event: H3Event | null | undefined,
   taskId: string
 ): Promise<FlowRecord | null> {
   return await repoGetFlowByTaskId(event, taskId);
@@ -40,7 +46,7 @@ export async function getFlowByTaskId(
  * Agora passamos o `event` para o repositório.
  */
 export async function getNodeById(
-  event: H3Event,
+  event: H3Event | null | undefined,
   taskId: string,
   nodeId: string
 ): Promise<NodeRecord | null> {
@@ -52,7 +58,7 @@ export async function getNodeById(
  * Agora passamos o `event` para o repositório.
  */
 export async function updateNodeDataInFlow(
-  event: H3Event,
+  event: H3Event | null | undefined,
   taskId: string,
   nodeId: string,
   newData: Record<string, any>
@@ -62,18 +68,25 @@ export async function updateNodeDataInFlow(
 
 /**
  * Cria um novo nó do tipo `type` com `initialData` opcional.
- * Observação: ligação edge opcional (sourceNodeId) não é feita aqui.
- * Se necessário, trate edges em um serviço específico de edges.
- * Agora passamos o `event` para o repositório.
+ * Se `parentId` for informado, a relação (edge) poderá ser criada pela camada de repositório.
+ * O `canvasContext` é usado como seed inicial quando o flow do banco está vazio (ex.: para garantir o nó `problem`).
  */
 export async function createNodeInFlow(
-  event: H3Event,
+  event: H3Event | null | undefined,
   taskId: string,
   type: string,
   initialData: Record<string, any> = {},
-  _sourceNodeId?: string
+  parentId?: string | null,
+  canvasContext?: { nodes?: any[]; edges?: any[] } | null
 ): Promise<NodeRecord> {
-  return await repoCreateNodeInFlow(event, taskId, type, initialData, null);
+  return await repoCreateNodeInFlow(
+    event,
+    taskId,
+    type,
+    initialData,
+    parentId ?? null,
+    canvasContext ?? undefined
+  );
 }
 
 /**
@@ -81,7 +94,7 @@ export async function createNodeInFlow(
  * Agora passamos o `event` para o repositório.
  */
 export async function deleteNodeFromFlow(
-  event: H3Event,
+  event: H3Event | null | undefined,
   taskId: string,
   nodeId: string
 ): Promise<{ deleted: boolean; nodeId: string }> {

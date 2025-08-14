@@ -10,7 +10,6 @@ export const connectionRules = {
     // e.g., 'solutionHypothesis': true
   },
   dataSource: {
-    survey: true,
     analysis: true, // Data sources can be connected to analysis nodes
 
     // Add other types that can follow a data source node
@@ -31,3 +30,19 @@ export type ConnectionRules = typeof connectionRules;
 export type SourceNodeType = keyof ConnectionRules;
 // Optional: Define TargetNodeType more precisely if needed based on rules
 // export type TargetNodeType<S extends SourceNodeType> = keyof ConnectionRules[S];
+
+// ---- Helpers built on top of the boolean matrix above ----------------------
+
+export type NodeType = "problem" | "dataSource" | "survey" | "analysis";
+
+/**
+ * Returns whether a connection from originType -> targetType is allowed
+ * according to the current boolean matrix.
+ */
+export function canConnect(originType: NodeType, targetType: NodeType) {
+  const originRules = (
+    connectionRules as Record<string, Record<string, boolean>>
+  )[originType];
+  const allowed = !!originRules && !!originRules[targetType];
+  return { allowed } as const;
+}

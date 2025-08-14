@@ -137,7 +137,7 @@ export default defineEventHandler(
     const agentGraph = getAgentGraph(checkpointer);
     // Use a stable thread id to allow proper resume across requests
     const threadId = taskId; // MUST be stable for the whole conversation/flow
-    const config = { configurable: { thread_id: threadId, event } };
+    const config = { configurable: { thread_id: threadId, extra: { event } } };
     let finalState;
     let interruptId: string | undefined;
 

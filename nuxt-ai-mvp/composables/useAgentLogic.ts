@@ -9,6 +9,7 @@ import { useNuxtApp } from "#imports";
 
 import { effectSchemas } from "~/lib/sideEffects";
 import type { SideEffect } from "~/lib/sideEffects";
+import { runAgentAction } from "~/lib/agentActions";
 
 type ApprovalAction = {
   tool_name: string;
@@ -222,35 +223,28 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
             try {
               switch (tool_name) {
                 case "createNode": {
-                  const { nodeType, sourceNodeId } = parameters;
-                  const sourceNode = taskFlowStore.nodes.find(
-                    (n) => n.id === sourceNodeId
-                  );
-                  await taskFlowStore.addNodeAndConnect(
+                  const { nodeType, sourceNodeId, newData } = parameters;
+                  await runAgentAction({
+                    type: "create",
                     nodeType,
-                    sourceNodeId,
-                    sourceNode?.position,
-                    sourceNode?.dimensions?.height
-                  );
+                    originId: sourceNodeId,
+                    initialData: newData,
+                  });
                   break;
                 }
                 case "datasource.create": {
-                  // Sem aprovação: cria nó datasource e conecta ao sourceNode (quando houver)
-                  const { sourceNodeId } = parameters;
-                  const sourceNode = taskFlowStore.nodes.find(
-                    (n) => n.id === sourceNodeId
-                  );
-                  await taskFlowStore.addNodeAndConnect(
-                    "datasource",
-                    sourceNodeId,
-                    sourceNode?.position,
-                    sourceNode?.dimensions?.height
-                  );
+                  const { sourceNodeId, newData } = parameters;
+                  await runAgentAction({
+                    type: "create",
+                    nodeType: "dataSource",
+                    originId: sourceNodeId,
+                    initialData: newData,
+                  });
                   break;
                 }
                 case "datasource.delete": {
                   const { nodeId } = parameters;
-                  await taskFlowStore.removeNode(nodeId);
+                  await runAgentAction({ type: "delete", nodeId });
                   break;
                 }
                 case "updateNode": {
@@ -316,13 +310,23 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
                 }
                 case "deleteNode": {
                   const { nodeId } = parameters;
-                  await taskFlowStore.removeNode(nodeId);
+                  await runAgentAction({ type: "delete", nodeId });
                   break;
                 }
                 case "nodeTool": {
                   const p = parameters as Record<string, any>;
                   const op = p?.operation;
                   const nodeType = p?.nodeType;
+
+                  if (op === "create") {
+                    await runAgentAction({
+                      type: "create",
+                      nodeType: p.nodeType,
+                      originId: p.parentId ?? p.sourceNodeId,
+                      initialData: p.newData,
+                    });
+                    break;
+                  }
 
                   if (op === "update") {
                     // If it's the Problem node, reuse the same normalization logic as in "problem.update"

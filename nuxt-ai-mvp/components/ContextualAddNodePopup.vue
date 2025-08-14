@@ -191,7 +191,4 @@ onBeforeUnmount(() => {
 }
 
 /* Item da lista */
-.vertical-node-list > div[role="button"] {
-  /* Adiciona padding e outros estilos se necessário para melhorar a área de clique */
-}
 </style>

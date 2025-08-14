@@ -12,14 +12,14 @@ import { DataSourceSchema } from "../../schema/dataSource";
 import {
   getNodeById as svcGetNodeById,
   updateNodeDataInFlow as svcUpdateNodeDataInFlow,
-  createNodeInFlow as svcCreateNodeInFlow,
-  deleteNodeFromFlow as svcDeleteNodeFromFlow,
 } from "~/server/services/taskFlowService";
+
+import type { H3Event } from "h3";
 
 type Base = {
   taskId: string;
   nodeType: string; // "problem" | "note" | "survey" | ...
-  event?: any;
+  event?: H3Event | null;
 };
 
 // Create
@@ -92,17 +92,12 @@ export async function nodeTool(params: Params) {
     );
     const draft = { ...sanitized, updated_at: new Date().toISOString() };
 
-    const parsed = schema.safeParse(draft);
-    if (!parsed.success)
-      return {
-        ok: false,
-        error: "ValidationError",
-        details: parsed.error.flatten(),
-      };
+    // IMPORTANTE: não validar no servidor na criação — a criação agora é executada pela UI
+    // (mesmo pipeline do "+ contextual"), que aplicará defaults/validações próprias.
 
     // aprovação
     if (policy.needsApproval && !params.isApprovedOperation) {
-      const summary = buildCreateSummary(nodeType, parsed.data);
+      const summary = buildCreateSummary(nodeType, draft);
       return {
         pending_confirmation: {
           render: policy.approvalRender,
@@ -113,20 +108,22 @@ export async function nodeTool(params: Params) {
       };
     }
 
-    // persistir
-    const created = await svcCreateNodeInFlow(
-      (params as any)?.event ?? null,
-      taskId,
-      nodeType,
-      parsed.data,
-      (params as CreateParams).parentId ?? undefined
-    );
+    // Delegar criação ao front via EXECUTE_ACTION (mesma UX do + contextual)
     return {
       ok: true,
-      created: true,
-      node: created,
+      scheduled: true,
       sideEffects: [
-        { type: "REFETCH_TASK_FLOW", payload: {} },
+        {
+          type: "EXECUTE_ACTION",
+          payload: {
+            tool_name: "createNode",
+            parameters: {
+              nodeType,
+              sourceNodeId: (params as CreateParams).parentId ?? undefined,
+              newData: draft,
+            },
+          },
+        },
         { type: "POST_MESSAGE", payload: { text: "✅ Nó criado." } },
       ],
     };
@@ -154,13 +151,18 @@ export async function nodeTool(params: Params) {
       };
     }
 
-    await svcDeleteNodeFromFlow((params as any)?.event ?? null, taskId, nodeId);
     return {
       ok: true,
-      deleted: true,
+      scheduled: true,
       nodeId,
       sideEffects: [
-        { type: "REFETCH_TASK_FLOW", payload: {} },
+        {
+          type: "EXECUTE_ACTION",
+          payload: {
+            tool_name: "deleteNode",
+            parameters: { nodeId },
+          },
+        },
         { type: "POST_MESSAGE", payload: { text: "🗑️ Nó deletado." } },
       ],
     };

@@ -2,6 +2,7 @@ import { ref, onUnmounted, getCurrentInstance } from "vue";
 // Ref global para garantir que só um popup/contexto do "+" esteja aberto por vez
 const globalContextualPopupNodeId = ref<string | null>(null);
 import { SidebarType } from "~/stores/sidebar";
+import { addFromPlusProgrammatically } from "~/lib/plusActions";
 import { useVueFlow } from "@vue-flow/core";
 import { useConnectionControlStore } from "~/stores/connectionControl";
 import { useTaskFlowStore } from "~/stores/taskFlow";
@@ -127,7 +128,7 @@ export default function usePlusButtonLogic({
       closeContextualPopup();
       return;
     }
-    taskFlowStore.requestAddNodeAndPrepareConnection(
+    addFromPlusProgrammatically(
       selectedType,
       originNodeId.value,
       currentNode.position,
