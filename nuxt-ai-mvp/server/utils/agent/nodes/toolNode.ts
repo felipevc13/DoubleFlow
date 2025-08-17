@@ -2,8 +2,6 @@ import type { PlanExecuteState } from "../graphState";
 import type { H3Event } from "h3";
 import { consola } from "consola";
 import { availableTools } from "~/server/utils/agent-tools";
-import type { SideEffect } from "~/lib/sideEffects";
-import { AIMessage } from "@langchain/core/messages";
 
 /**
  * Regras importantes:
@@ -22,6 +20,14 @@ export async function toolNode( // Renomeado de executeNode
 ): Promise<Partial<PlanExecuteState>> {
   consola.info("[toolNode] Estado RECEBIDO:", JSON.stringify(state, null, 2));
   const actionToExecute = (state as any).pending_execute;
+
+  // Detecta se já houve aprovação prévia (via humanApprovalNode/resume)
+  const previouslyApproved = !!(
+    (state as any)?.last_tool_result?.approval?.approved === true
+  );
+  // Em alguns fluxos, `config` volta como booleano true no resume
+  const resumeApproved = config === true;
+  const isApproved = previouslyApproved || resumeApproved;
 
   const event: H3Event | null =
     (config as any)?.configurable?.extra?.event ?? null;
@@ -52,104 +58,98 @@ export async function toolNode( // Renomeado de executeNode
       !!config
     );
 
-    // Executa a ferramenta (compat: função direta ou LangChain tool)
+    // Constrói parâmetros a serem enviados à tool, propagando aprovação quando existir
+    const params = {
+      ...(actionToExecute.parameters || {}),
+      ...(isApproved ? { isApprovedOperation: true } : {}),
+    };
+
     let result: any;
     if (typeof tool === "function") {
       // Tool exportada como função (ex.: nodeTool)
       result = await (tool as any)({
-        ...(actionToExecute.parameters || {}),
+        ...params,
         event,
       });
     } else if (tool && typeof (tool as any).invoke === "function") {
       // LangChain tool com .invoke
-      result = await (tool as any).invoke(actionToExecute.parameters, config);
+      result = await (tool as any).invoke(params, config);
     } else if (tool && typeof (tool as any).run === "function") {
       // Fallback comum
-      result = await (tool as any).run(actionToExecute.parameters);
+      result = await (tool as any).run(params);
     } else {
       throw new Error(
         "Tool implementation has no callable signature (function/invoke/run)"
       );
     }
 
-    // Se a tool pediu confirmação, primeiro focamos o nó e deixamos o caller abrir o modal
+    // Se a tool pediu confirmação, apenas devolvemos o payload e limpamos a execução pendente
     if (result?.pending_confirmation) {
-      const nodeIdToFocus = (actionToExecute as any)?.parameters?.nodeId;
-      const focusEffect: SideEffect | null = nodeIdToFocus
-        ? { type: "FOCUS_NODE", payload: { nodeId: nodeIdToFocus } }
-        : null;
-
-      const effectsToPersist: SideEffect[] = [];
-      if (focusEffect) effectsToPersist.push(focusEffect);
-
-      // anexa no state.sideEffects também, mantendo compat com quem lê do estado
-      (state as any).sideEffects = Array.isArray((state as any).sideEffects)
-        ? (state as any).sideEffects
-        : [];
-      (state as any).sideEffects.push(...effectsToPersist);
-
+      if (isApproved) {
+        consola.warn(
+          "[toolNode] Tool retornou pending_confirmation mesmo com aprovação prévia. Verifique a lógica da tool para respeitar 'isApprovedOperation'."
+        );
+      }
       const ret: Partial<PlanExecuteState> = {
         last_tool_result: { pending_confirmation: result.pending_confirmation },
         pending_confirmation: result.pending_confirmation,
-        sideEffects: effectsToPersist,
         pending_execute: null,
         input: "",
         messages: state.messages || [],
       };
       consola.info(
-        "[toolNode] RET (pending_confirmation):",
+        "[toolNode] RET (pending_confirmation, sem efeitos UI):",
         JSON.stringify(ret, null, 2)
       );
       return ret;
     }
 
-    // Normaliza side effects vindos do tool (se houver)
-    const toolSideEffects: SideEffect[] = Array.isArray(result?.sideEffects)
-      ? (result.sideEffects as SideEffect[])
-      : [];
-
-    // Avalia se já existe um REFETCH do próprio tool
-    const hasRefetchFromTool =
-      toolSideEffects?.some?.((s) => s?.type === "REFETCH_TASK_FLOW") ?? false;
-
-    // Se o tool indicou que houve atualização mas não pediu refetch,
-    // adicionamos um REFETCH como fallback para manter a UI sincronizada.
-    const shouldAddRefetchFallback = !!result?.updated && !hasRefetchFromTool;
+    // === Nova abordagem: toolNode não produz mais sideEffects para a UI ===
+    // Ele apenas reporta um resultado estruturado para o orquestrador decidir.
 
     const didSucceed = result?.updated === true || result?.ok === true;
-    const effectsToPersist: SideEffect[] = [
-      ...(didSucceed
-        ? ([
-            {
-              type: "POST_MESSAGE",
-              payload: { text: `✅ Ação '${tool_name}' concluída!` },
-            },
-          ] as SideEffect[])
-        : []),
-      ...toolSideEffects,
-      ...(shouldAddRefetchFallback
-        ? ([{ type: "REFETCH_TASK_FLOW", payload: {} }] as SideEffect[])
-        : []),
-    ];
 
-    (state as any).sideEffects = Array.isArray((state as any).sideEffects)
-      ? (state as any).sideEffects
-      : [];
+    // Sinal opcional para o orquestrador focar algo
+    const focusNodeId =
+      (actionToExecute as any)?.parameters?.nodeId ??
+      result?.focusNodeId ??
+      null;
 
-    (state as any).sideEffects.push(...effectsToPersist);
+    // Se a tool retornou efeitos internos, extraia a ação EXECUTE_ACTION (se houver)
+    const execAction = Array.isArray(result?.sideEffects)
+      ? (result.sideEffects as any[]).find(
+          (s: any) => s?.type === "EXECUTE_ACTION"
+        )
+      : null;
+
+    const actionToExecuteForOrchestrator = execAction
+      ? { type: "EXECUTE_ACTION", payload: execAction.payload }
+      : null;
 
     const ret: Partial<PlanExecuteState> = {
-      last_tool_result: result,
-      sideEffects: effectsToPersist,
+      last_tool_result: {
+        ok: !!(result?.ok || result?.updated || result?.scheduled),
+        updated: !!result?.updated,
+        scheduled: !!result?.scheduled,
+        // Em vez de enviar sideEffects ao front, fornecemos um fato para o orquestrador
+        actionToExecute: actionToExecuteForOrchestrator,
+        uiHints: {
+          successMessage: didSucceed
+            ? `✅ Ação '${tool_name}' concluída!`
+            : undefined,
+          focusNodeId,
+        },
+      },
+      // Não emitimos sideEffects aqui; a fonte da verdade é o orquestrador
       pending_execute: null,
       input: "",
-      messages: [
-        ...(state.messages || []),
-        new AIMessage(`✅ Ação '${tool_name}' concluída!`),
-      ],
+      messages: state.messages || [],
     };
 
-    consola.info("[toolNode] Estado RETORNADO:", JSON.stringify(ret, null, 2));
+    consola.info(
+      "[toolNode] Estado RETORNADO (sem sideEffects; orquestrador é a fonte):",
+      JSON.stringify(ret, null, 2)
+    );
     return ret;
   } catch (err: any) {
     consola.error(
@@ -157,14 +157,16 @@ export async function toolNode( // Renomeado de executeNode
       err
     );
     const ret: Partial<PlanExecuteState> = {
-      sideEffects: [
-        {
-          type: "POST_MESSAGE",
-          payload: { text: `❌ Erro ao executar ${tool_name}: ${err.message}` },
+      last_tool_result: {
+        ok: false,
+        error: { message: err.message, stack: err.stack },
+        uiHints: {
+          errorMessage: `❌ Erro ao executar ${tool_name}: ${err.message}`,
         },
-      ] as SideEffect[],
+      },
       pending_execute: null,
       input: "",
+      messages: state.messages || [],
     };
     consola.info(
       "[toolNode] Estado RETORNADO (Erro):",

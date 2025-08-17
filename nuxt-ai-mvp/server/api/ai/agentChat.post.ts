@@ -11,44 +11,17 @@ import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { randomUUID } from "crypto";
 import { Command } from "@langchain/langgraph";
 import nodeTypesRaw from "~/config/nodeTypes-raw";
-
-// Build a coherent confirmation summary/diff using the actual newData that will be executed
-function computeConfirmation(payload: any) {
-  const params = payload?.parameters ?? {};
-  const nodeId = params?.nodeId;
-  const ctx = params?.canvasContext ?? {};
-  const nodes = Array.isArray(ctx?.nodes) ? ctx.nodes : [];
-  const nodeData = nodes.find((n: any) => n?.id === nodeId)?.data ?? {};
-  const newData = params?.newData ?? {};
-  const diffFields = payload?.meta?.diffFields ?? ["title", "description"]; // fallback
-
-  const diff: Array<{ field: string; from: any; to: any }> = [];
-  for (const f of diffFields) {
-    if (Object.prototype.hasOwnProperty.call(newData, f)) {
-      const fromVal = (nodeData as any)?.[f];
-      const toVal = (newData as any)?.[f];
-      if (fromVal !== toVal) {
-        diff.push({ field: f, from: fromVal, to: toVal });
-      }
-    }
-  }
-
-  // Prefer a meaningful summary for title changes
-  let summary = payload?.summary;
-  if ("title" in newData && nodeData?.title !== newData.title) {
-    summary = `Título → “${newData.title}”`;
-  }
-  if (!summary || typeof summary !== "string") {
-    summary = "Confirme esta ação proposta.";
-  }
-
-  return { summary, diff, parameters: params };
-}
+import { buildEffects } from "~/server/utils/agent/effects/orchestrator";
 
 export default defineEventHandler(
   async (
     event
-  ): Promise<{ sideEffects: SideEffect[]; correlationId: string }> => {
+  ): Promise<{
+    sideEffects: SideEffect[];
+    correlationId: string;
+    pending_confirmation: any | null;
+    pending_execute?: any | null;
+  }> => {
     consola.info("[agentChat] === Novo request iniciado ===");
     const body = await readBody(event);
     let {
@@ -148,65 +121,50 @@ export default defineEventHandler(
           resumeValue: resume.value,
         });
 
-        // Se veio confirmação do modal, dispare a execução diretamente
-        const { confirmed, approved_action } = (resume.value as any) || {};
-        if (
-          confirmed &&
-          approved_action?.tool_name &&
-          approved_action?.parameters
-        ) {
-          consola.info(
-            "[agentChat] RESUME com confirmação recebida. Disparando EXECUTE_ACTION direto do servidor."
-          );
+        const resumeVal: any = resume.value;
 
-          // Normaliza/garante flags de aprovação para a tool não pedir confirmação de novo
-          const normalizedParams = {
-            ...approved_action.parameters,
-            isApprovedUpdate: true,
-            isApprovedOperation: true,
-          };
-
-          const nodeId = normalizedParams?.nodeId as string | undefined;
-          const op = normalizedParams?.operation as string | undefined;
-          const ntype = normalizedParams?.nodeType as string | undefined;
-          let feedbackMessage = "✅ Ação aprovada e executada.";
-          if (ntype === "problem" && (op === "update" || op === "patch")) {
-            feedbackMessage = "✅ Problema atualizado.";
+        // (A) RESUME boolean (modal aprovação via boolean)
+        if (typeof resumeVal === "boolean") {
+          consola.info("[agentChat] RESUME boolean recebido:", resumeVal);
+          const cmd = new Command({ resume: resumeVal });
+          finalState = await agentGraph.invoke(cmd, config);
+          consola.success("[agentChat] RESUME boolean: invoke concluído");
+          if (!finalState) {
+            finalState = await agentGraph.getState(config);
+            consola.success(
+              "[agentChat] RESUME boolean: getState concluído (fallback)"
+            );
           }
 
-          const immediateEffects: SideEffect[] = [];
-          if (nodeId) {
-            immediateEffects.push({
-              type: "FOCUS_NODE",
-              payload: { nodeId },
-            } as any);
+          // (B) RESUME Clarify (ASK_CLARIFY_RESULT)
+        } else if (resumeVal && resumeVal.kind === "ASK_CLARIFY_RESULT") {
+          consola.info("[agentChat] RESUME ASK_CLARIFY_RESULT recebido.");
+          const cmd = new Command({ resume: resumeVal });
+          finalState = await agentGraph.invoke(cmd, config);
+          consola.success("[agentChat] RESUME clarify: invoke concluído");
+          if (!finalState) {
+            finalState = await agentGraph.getState(config);
+            consola.success(
+              "[agentChat] RESUME clarify: getState concluído (fallback)"
+            );
           }
-          immediateEffects.push({
-            type: "EXECUTE_ACTION",
-            payload: {
-              tool_name: approved_action.tool_name,
-              parameters: normalizedParams,
-              feedbackMessage,
-              correlationId,
-            },
-          } as any);
 
+          // (D) Default: encaminha o resume qualquer para o grafo
+        } else {
           consola.info(
-            "[agentChat] RESUME: retornando sideEffects imediatos (EXECUTE_ACTION)"
+            "[agentChat] Retomando execução via Command({ resume }) com correlationId:",
+            correlationId
           );
-          return { sideEffects: immediateEffects, correlationId };
+          const cmd = new Command({ resume: resumeVal });
+          finalState = await agentGraph.invoke(cmd, config);
+          consola.success("[agentChat] RESUME: invoke concluído sem exceções");
+          if (!finalState) {
+            finalState = await agentGraph.getState(config);
+            consola.success(
+              "[agentChat] RESUME: getState concluído (fallback)"
+            );
+          }
         }
-
-        // Caso não seja um resume de confirmação, usamos o mecanismo padrão do LangGraph
-        consola.info(
-          "[agentChat] Retomando execução via Command({ resume }) com correlationId:",
-          correlationId
-        );
-        const cmd = new Command({ resume: resume.value });
-        await agentGraph.invoke(cmd, config);
-        consola.success("[agentChat] RESUME: invoke concluído sem exceções");
-        finalState = await agentGraph.getState(config);
-        consola.success("[agentChat] RESUME: getState concluído");
       } else {
         consola.info("[agentChat] Invocando grafo com input inicial.");
         // Enriquecer o canvasContext com catálogo e títulos/descrições promovidos
@@ -297,133 +255,45 @@ export default defineEventHandler(
       );
     }
 
-    // Aggregate side effects from multiple sources (state, last_tool_result, direct invoke)
-    const effectsFromState = Array.isArray(realState.sideEffects)
-      ? realState.sideEffects
-      : [];
-    const effectsFromLastTool = Array.isArray(
-      (realState as any)?.last_tool_result?.sideEffects
-    )
-      ? (realState as any).last_tool_result.sideEffects
-      : [];
-    const invokeContainer =
-      finalState &&
-      typeof finalState === "object" &&
-      "data" in (finalState as any)
-        ? (finalState as any).data
-        : finalState;
-    const effectsFromInvoke = Array.isArray(
-      (invokeContainer as any)?.sideEffects
-    )
-      ? (invokeContainer as any).sideEffects
-      : [];
+    // Construir efeitos via orquestrador (config-driven)
+    const effectsBuilt =
+      buildEffects(realState, {
+        nodeTypes: nodeTypesRaw,
+        source: mode === "resume" ? "resume" : "invoke",
+        correlationId,
+      }) ?? [];
 
-    let finalSideEffects: SideEffect[] = [
-      ...effectsFromState,
-      ...effectsFromLastTool,
-      ...effectsFromInvoke,
-    ];
-    // de-duplicate by type + payload
-    const seenEffects = new Set<string>();
-    finalSideEffects = finalSideEffects.filter((e: any) => {
-      try {
-        const key = `${e?.type}::${JSON.stringify(e?.payload ?? null)}`;
-        if (seenEffects.has(key)) return false;
-        seenEffects.add(key);
-        return true;
-      } catch {
-        return true;
-      }
-    });
+    // 🔒 Fonte única da verdade: os efeitos vêm apenas do orquestrador.
+    // Se o grafo pedir confirmação, ele mesmo não deve ter gerado efeitos "post".
+    const hasPendingConfirmation = Boolean(
+      (realState as any).pending_confirmation
+    );
+    consola.info(
+      "[orchestrator] phase: pre hasPendingConfirmation:",
+      hasPendingConfirmation
+    );
 
-    if (realState.pending_confirmation) {
-      consola.info(
-        "[agentChat] pending_confirmation detectado. Preparando SHOW_CONFIRMATION."
-      );
-      if (!finalSideEffects.some((e) => e.type === "SHOW_CONFIRMATION")) {
-        const pc: any = realState.pending_confirmation;
-        const pe: any = (realState as any).pending_execute;
-        consola.debug("[agentChat] pending_confirmation payload:", pc);
-
-        // Prefer the pending_execute parameters as the source of truth when present
-        const source = pe && pe.parameters ? pe : pc;
-        const render: "chat" | "modal" =
-          pc?.render === "modal" || source?.approvalRender === "modal"
-            ? "modal"
-            : "chat";
-
-        const built = computeConfirmation(source);
-        const parameters = built.parameters ?? {};
-        const nodeId = parameters?.nodeId ?? undefined;
-
-        finalSideEffects.push({
-          type: "SHOW_CONFIRMATION",
-          payload: {
-            render, // "chat" | "modal"
-            summary: built.summary, // texto curto para UI
-            diff: built.diff, // estrutura de diff recalculada
-            parameters, // igual ao que será reenviado na aprovação
-            nodeId, // opcional para a UI focar o alvo
-            correlationId, // necessário para retomar o turno interrompido
-          },
-        });
-      }
-    }
-
-    if (
-      (realState as any).pending_execute &&
-      !finalSideEffects.some((e) => e.type === "EXECUTE_ACTION")
-    ) {
-      const pe = (realState as any).pending_execute; // { tool_name, parameters, meta }
-      const op = pe?.parameters?.operation;
-      const ntype = pe?.parameters?.nodeType;
-      const needsApproval =
-        pe?.meta?.needsApproval === true &&
-        !pe?.parameters?.isApprovedOperation &&
-        !pe?.parameters?.isApprovedUpdate;
-
-      // Only enqueue EXECUTE_ACTION automatically if it does NOT need approval
-      if (!needsApproval) {
-        let feedbackMessage = "✅ Ação aprovada e executada.";
-        if (ntype === "problem" && (op === "update" || op === "patch")) {
-          feedbackMessage = "✅ Problema atualizado.";
-        }
-
-        finalSideEffects.push({
-          type: "EXECUTE_ACTION",
-          payload: {
-            tool_name: pe.tool_name,
-            parameters: pe.parameters,
-            feedbackMessage,
-            correlationId,
-          },
-        });
-      } else {
-        consola.debug(
-          "[agentChat] EXECUTE_ACTION adiado: aguardando aprovação do usuário."
-        );
-      }
-    }
-
-    if (realState.response && finalSideEffects.length === 0) {
-      consola.info(
-        "[agentChat] Adicionando POST_MESSAGE por ausência de sideEffects."
-      );
-      finalSideEffects.push({
-        type: "POST_MESSAGE",
-        payload: { text: realState.response },
-      });
-    }
+    // Use somente os efeitos produzidos nesta rodada pelo orquestrador
+    const effectsToReturn: SideEffect[] = effectsBuilt;
 
     consola.info(
       "[agentChat] Final SideEffects – resumo:",
-      finalSideEffects.map((s) => ({ type: s.type }))
+      effectsToReturn.map((s: any) => ({ type: s.type }))
     );
     consola.debug(
       "[agentChat] Final SideEffects – payload completo:",
-      finalSideEffects
+      effectsToReturn
+    );
+    consola.debug(
+      "[agentChat] realState.last_tool_result:",
+      (realState as any).last_tool_result
     );
     consola.info("[agentChat] === Request FINALIZADO ===");
-    return { sideEffects: finalSideEffects, correlationId: correlationId };
+    return {
+      sideEffects: effectsToReturn,
+      correlationId,
+      pending_confirmation: (realState as any).pending_confirmation ?? null,
+      pending_execute: (realState as any).pending_execute ?? null,
+    };
   }
 );

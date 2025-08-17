@@ -1,15 +1,9 @@
-import { CanvasContext } from "../types";
+import { CanvasContext, ClarifyQuestion } from "../types";
 
-export type ClarifyQuestion = {
-  id: string;
-  label: string;
-  placeholder?: string;
-  required?: boolean;
-};
-export type ClarifyResult = {
-  needsClarify: boolean;
-  questions?: ClarifyQuestion[];
-};
+// Resultado interno do detector (usar discriminador 'kind')
+type DetectResult =
+  | { kind: "clarify"; questions: ClarifyQuestion[] }
+  | { kind: "ok" };
 
 export type PatchProposal = {
   patch: Partial<{ title: string; description: string }>;
@@ -24,7 +18,7 @@ export type ValidationIssue = {
 export type ValidationReport = { ok: boolean; issues: ValidationIssue[] };
 
 export type ProblemRefinementAdapter = {
-  detect(input: string, ctx: CanvasContext): ClarifyResult;
+  detect(input: string, ctx: CanvasContext): DetectResult;
   ask(ctx: CanvasContext): ClarifyQuestion[];
   propose(
     input: string,
@@ -56,37 +50,37 @@ export type ProblemRefinementAdapter = {
 export const problemRefinementAdapter: ProblemRefinementAdapter = {
   detect(input, _ctx) {
     const text = typeof input === "string" ? input : "";
-    const needsClarify = text.trim().length < 8;
-    return needsClarify
+    const shouldClarify = text.trim().length < 8;
+    return shouldClarify
       ? {
-          needsClarify: true,
+          kind: "clarify",
           questions: [
             {
-              id: "who",
+              key: "who",
               label: "Quem é o usuário afetado?",
               placeholder: "Ex.: novos usuários do app",
               required: true,
             },
             {
-              id: "pain",
+              key: "pain",
               label: "Qual é a dor/necessidade principal?",
               placeholder: "Ex.: app fecha ao abrir perfil",
               required: true,
             },
           ],
         }
-      : { needsClarify: false };
+      : { kind: "ok" };
   },
   ask(_ctx) {
     return [
       {
-        id: "who",
+        key: "who",
         label: "Quem é o usuário afetado?",
         placeholder: "Ex.: novos usuários do app",
         required: true,
       },
       {
-        id: "pain",
+        key: "pain",
         label: "Qual é a dor/necessidade principal?",
         placeholder: "Ex.: app fecha ao abrir perfil",
         required: true,

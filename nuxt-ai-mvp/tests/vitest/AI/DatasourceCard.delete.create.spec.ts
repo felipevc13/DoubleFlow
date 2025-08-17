@@ -16,9 +16,35 @@ vi.mock("~/lib/agentActions", () => ({
   runAgentAction: mockRunAgentAction,
 }));
 
+// Mock stores (Pinia) — hoisted-safe to allow importing the real composable later
+const { mockTaskFlowStore } = vi.hoisted(() => ({
+  mockTaskFlowStore: {
+    addNodeAndConnect: vi.fn(),
+    removeNode: vi.fn(),
+  },
+}));
+
+vi.mock("~/stores/taskFlow", () => ({
+  useTaskFlowStore: () => mockTaskFlowStore,
+}));
+
+vi.mock("~/stores/modal", () => ({
+  useModalStore: () => ({
+    openModal: vi.fn(),
+    closeModal: vi.fn(),
+    isModalOpen: vi.fn().mockReturnValue(false),
+    getActiveModalType: { value: undefined },
+    getModalData: { value: undefined },
+    getActiveNodeId: { value: undefined },
+  }),
+  ModalType: {},
+}));
+
 // Import after mocks so they bind to the mocked modules
 import { useNuxtApp } from "#imports";
 import { runAgentAction } from "~/lib/agentActions";
+
+import { useAgentLogic as useAgentLogicReal } from "~/composables/useAgentLogic";
 
 // ===== Local, lightweight implementation only for this spec =====
 function makeUseAgentLogic(taskIdRef: any) {
@@ -104,5 +130,63 @@ describe("DatasourceCard (DataSource) — create/delete via Agent side-effects",
       type: "delete",
       nodeId,
     });
+  });
+});
+
+// ===== Extra tests: front-only path using real composable =====
+
+describe("DatasourceCard (DataSource) — front-only EXECUTE_ACTION path (real composable)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("create: EXECUTE_ACTION direto é ignorado pelo composable (sem side-effect) — não chama addNodeAndConnect", async () => {
+    const { sendMessage } = useAgentLogicReal(ref("task-front-1"));
+
+    const sourceNodeId = "node-123";
+    const edgeLabel = "dados";
+    const newData = { title: "Planilha" };
+
+    await sendMessage({
+      type: "EXECUTE_ACTION",
+      action: {
+        tool_name: "dataSource.create",
+        toolName: "dataSource.create",
+        needsApproval: nodeTypesRaw.dataSource.operations.create.needsApproval,
+        parameters: { sourceNodeId, edgeLabel, newData },
+      },
+    });
+
+    // DEBUG: imprimir chamadas capturadas
+    console.log(
+      "[TEST] addNodeAndConnect calls:",
+      mockTaskFlowStore.addNodeAndConnect.mock.calls
+    );
+
+    expect(mockTaskFlowStore.addNodeAndConnect).not.toHaveBeenCalled();
+  });
+
+  it("delete: EXECUTE_ACTION direto é ignorado pelo composable (sem side-effect) — não chama removeNode", async () => {
+    const { sendMessage } = useAgentLogicReal(ref("task-front-2"));
+
+    const nodeId = "node-456";
+
+    await sendMessage({
+      type: "EXECUTE_ACTION",
+      action: {
+        tool_name: "dataSource.delete",
+        toolName: "dataSource.delete",
+        needsApproval: nodeTypesRaw.dataSource.operations.delete.needsApproval,
+        parameters: { nodeId, isApprovedUpdate: true },
+      },
+    });
+
+    // DEBUG: imprimir chamadas capturadas
+    console.log(
+      "[TEST] removeNode calls:",
+      mockTaskFlowStore.removeNode.mock.calls
+    );
+
+    expect(mockTaskFlowStore.removeNode).not.toHaveBeenCalled();
   });
 });

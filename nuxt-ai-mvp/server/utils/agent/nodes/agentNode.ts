@@ -7,9 +7,8 @@ import {
   toolLookup,
 } from "~/server/api/ai/classifyIntentGeneric";
 // ✅ IMPORT CORRIGIDO
-import type { SideEffect } from "~/lib/sideEffects";
-import { generateUiPreparationEffects } from "../uiEffectManager";
 import { refineProblemHelper } from "../intents/problemRefinement";
+import type { ClarifyRequest } from "../types";
 
 export async function agentNode(
   state: PlanExecuteState
@@ -51,6 +50,9 @@ export async function agentNode(
 
     // Tratamento de erro do helper
     if (refineOut && typeof refineOut === "object" && "error" in refineOut) {
+      consola.debug("[agentNode] Erro no refinamento", {
+        error: refineOut.error,
+      });
       return {
         sideEffects: [
           {
@@ -69,58 +71,61 @@ export async function agentNode(
         refineOut.question ||
         "Preciso de mais detalhes para refinar o problema. O que você quer ajustar (título, descrição, ou ambos)?";
 
-      // Estruturar como pending_confirmation para o humanApprovalNode controlar
-      return {
-        pending_confirmation: {
-          render: "chat",
-          kind: "ASK_CLARIFY",
-          summary:
-            "Antes de propor a alteração, preciso confirmar alguns pontos.",
-          questions: refineOut.questions ?? [
-            {
-              id: "scope",
-              label: "Você quer ajustar o título, a descrição, ou ambos?",
-              placeholder: "Escolha: título, descrição ou ambos",
-              required: true,
-            },
-            {
-              id: "context",
-              label:
-                "Existe algum contexto (usuário afetado, quando ocorre, impacto) que devo manter?",
-              placeholder: "Descreva o contexto essencial (opcional)",
-              required: false,
-            },
-          ],
-          parameters: {
-            intent: "problemRefinement.ask_clarify",
-            nodeId: state.canvasContext?.problem_statement?.id,
-            canvasContext: state.canvasContext,
+      const clarifyReq: ClarifyRequest = {
+        kind: "ASK_CLARIFY",
+        reason: msg,
+        questions: (refineOut.questions as any[])?.map((q: any) => ({
+          key: q.key ?? q.id, // compat: aceita formato antigo
+          label: q.label,
+          placeholder: q.placeholder,
+          required: !!q.required,
+          type: q.type,
+          options: q.options,
+        })) ?? [
+          {
+            key: "scope",
+            label: "Você quer ajustar o título, a descrição, ou ambos?",
+            placeholder: "Escolha: título, descrição ou ambos",
+            required: true,
           },
-        } as any,
-        sideEffects: [
-          { type: "POST_MESSAGE", payload: { text: msg } },
-          ...(state.canvasContext?.problem_statement?.id
-            ? generateUiPreparationEffects(
-                state,
-                state.canvasContext.problem_statement.id
-              )
-            : []),
+          {
+            key: "context",
+            label:
+              "Existe algum contexto (usuário afetado, quando ocorre, impacto) que devo manter?",
+            placeholder: "Descreva o contexto essencial (opcional)",
+            required: false,
+          },
         ],
+        context: {
+          nodeId: state.canvasContext?.problem_statement?.id,
+          canvasContext: state.canvasContext,
+        },
+      };
+
+      consola.debug("[agentNode] Saída clarify", { clarifyReq });
+      return {
+        clarify_request: clarifyReq,
+        pending_confirmation: null,
+        last_tool_result: null,
+        // não decide UI aqui; orquestrador emite SHOW_CLARIFY/FOCUS se necessário
       };
     }
 
     // Caso 2: já temos uma proposta de alteração (PROPOSE_PATCH)
     const proposal: any = refineOut?.proposal ?? refineOut;
-    const targetNodeId =
-      proposal?.parameters?.nodeId ||
-      state.canvasContext?.problem_statement?.id;
+    const parameters = proposal?.parameters;
+    const approvalRender = proposal?.render ?? "chat";
 
-    const sideEffects = targetNodeId
-      ? generateUiPreparationEffects(state, targetNodeId)
-      : [];
-
-    // Não executar direto: encaminhar para CONFIRM
-    return { sideEffects, pending_confirmation: proposal };
+    consola.debug("[agentNode] Saída proposal/patch", { proposal, parameters });
+    // Não executar direto: encaminhar para CONFIRM e já preparar a execução
+    return {
+      pending_confirmation: proposal,
+      pending_execute: {
+        tool_name: "nodeTool",
+        parameters,
+      },
+      last_tool_result: null,
+    };
   }
 
   // ... (o resto do arquivo `agentNode` permanece o mesmo) ...
@@ -131,17 +136,15 @@ export async function agentNode(
     targetType === "problem" &&
     (action === "create" || action === "delete")
   ) {
+    consola.debug("[agentNode] Ação inválida em problem", {
+      action,
+      targetType,
+    });
     return {
-      sideEffects: [
-        {
-          type: "POST_MESSAGE",
-          payload: {
-            text: "❌ Ação inválida: o nó 'problema' não pode ser criado nem removido.",
-          },
-        },
-      ],
-      // mantém fluxo no chat para novas instruções
+      response:
+        "❌ Ação inválida: o nó 'problema' não pode ser criado nem removido.",
       next_step: "chatNode" as any,
+      last_tool_result: null,
     };
   }
   const actionId = `${targetType}.${action}`;
@@ -196,33 +199,41 @@ export async function agentNode(
     const toolCall = {
       tool_name: "nodeTool", // 🔑 unificada
       parameters,
-      displayMessage: `A IA propõe: ${actionId}. Você confirma?`,
-      meta,
     };
 
-    const targetNodeId = parameters.nodeId;
-    const sideEffects = targetNodeId
-      ? generateUiPreparationEffects(state, targetNodeId)
-      : [];
+    const displayMessage = `A IA propõe: ${actionId}. Você confirma?`;
 
-    // Se a ferramenta requer aprovação, não executa direto: abre CONFIRM
+    // Se a ferramenta requer aprovação, não executa direto: abre confirmação via orquestrador
     if (meta?.needsApproval) {
+      consola.debug("[agentNode] Saída com approval pendente", {
+        actionId,
+        parameters,
+      });
       return {
-        sideEffects,
         pending_confirmation: {
           kind: "PROPOSE_PATCH",
           render: meta.approvalRender ?? "modal",
-          summary: toolCall.displayMessage,
+          summary: displayMessage,
           parameters,
         } as any,
+        pending_execute: {
+          tool_name: "nodeTool",
+          parameters,
+        },
+        last_tool_result: null,
       };
     }
 
     // Caso contrário, executa direto
-    return { sideEffects, pending_execute: toolCall };
+    consola.debug("[agentNode] Execução direta sem approval", {
+      actionId,
+      parameters,
+    });
+    return { pending_execute: toolCall, last_tool_result: null };
   }
 
   // Rota 3: Fallback para Chat
+  consola.debug("[agentNode] Fallback → chatNode", { input: state.input });
   consola.info("[agentNode] Nenhuma ação clara, roteando para chatNode.");
-  return { next_step: "chatNode" as any };
+  return { next_step: "chatNode" as any, last_tool_result: null };
 }

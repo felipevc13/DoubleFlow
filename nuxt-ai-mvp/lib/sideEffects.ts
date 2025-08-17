@@ -1,4 +1,18 @@
 import { z } from "zod";
+import type { ClarifyRequest } from "~/server/utils/agent/types";
+
+const EffectMeta = z.object({
+  seq: z.number().int().nonnegative().optional(),
+  phase: z.enum(["pre", "post"]).optional(),
+  txId: z.string().optional(),
+  uiHints: z
+    .object({
+      focusNodeId: z.string().optional(),
+      successMessage: z.string().optional(),
+    })
+    .partial()
+    .optional(),
+});
 
 /** Definição dos payloads individuais */
 const PostMessage = z.object({
@@ -21,16 +35,9 @@ const RefetchTaskFlow = z.object({
   type: z.literal("REFETCH_TASK_FLOW"),
   payload: z.object({}).strict(),
 });
-export const ShowConfirm = z.object({
-  type: z.literal("SHOW_CONFIRMATION"),
-  payload: z.object({
-    render: z.enum(["chat", "modal"]),
-    summary: z.string(),
-    diff: z.any(),
-    parameters: z.record(z.any()),
-    nodeId: z.string().optional(),
-    correlationId: z.string().optional(),
-  }),
+export const ShowClarify = z.object({
+  type: z.literal("SHOW_CLARIFY"),
+  payload: z.custom<ClarifyRequest>(),
 });
 const ExecuteAction = z.object({
   type: z.literal("EXECUTE_ACTION"),
@@ -52,15 +59,17 @@ export const DirectCmdSchema = z.object({
 });
 
 /** União discriminada — fonte única da verdade para os efeitos colaterais */
-export const effectSchemas = z.union([
-  PostMessage,
-  FocusNode,
-  OpenModal,
-  CloseModal,
-  ShowConfirm,
-  ExecuteAction,
-  RefetchTaskFlow,
-]);
+export const effectSchemas = z
+  .union([
+    PostMessage,
+    FocusNode,
+    OpenModal,
+    CloseModal,
+    ShowClarify,
+    ExecuteAction,
+    RefetchTaskFlow,
+  ])
+  .and(EffectMeta);
 
 /** Tipo TypeScript derivado */
 export type SideEffect = z.infer<typeof effectSchemas>;

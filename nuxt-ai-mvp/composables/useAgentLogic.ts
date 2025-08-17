@@ -4,11 +4,9 @@ import { useModalStore, ModalType } from "~/stores/modal";
 // A linha de import para useAnimatedFitToNode foi removida daqui.
 import * as uuid from "uuid";
 const uuidv4 = uuid.v4;
-import { z } from "zod";
 import { useNuxtApp } from "#imports";
-
-import { effectSchemas } from "~/lib/sideEffects";
 import type { SideEffect } from "~/lib/sideEffects";
+import { effectRegistry } from "~/lib/effects/client/registry";
 import { runAgentAction } from "~/lib/agentActions";
 
 type ApprovalAction = {
@@ -25,6 +23,10 @@ interface ChatMessage {
 }
 
 const messages = ref<ChatMessage[]>([]);
+// Tracks last processed seq per correlationId **and phase** (pre/post) to avoid discarding post-phase effects
+// when there was a higher seq in pre-phase.
+type PhaseKey = "pre" | "post" | "none";
+const lastSeqByCorrPhase = ref<Record<string, Record<PhaseKey, number>>>({});
 
 // Helper: build Authorization header from current Supabase session
 const getAuthHeaders = async (): Promise<Record<string, string>> => {
@@ -47,15 +49,92 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
   const lastServerCorrelationId = ref<string | null>(null);
   const awaitingApproval = ref(false);
   const awaitingApprovalCorrelationId = ref<string | null>(null);
+  const clarifyCorrelationId = ref<string | null>(null);
+  const clarifyPending = ref<{
+    reason?: string;
+    questions: Array<{ key: string; label: string; required?: boolean }>;
+    context?: Record<string, any>;
+  } | null>(null);
 
-  const executeSideEffects = async (
-    effects: SideEffect[],
-    correlationId: string
-  ) => {
+  // === DEDUPE STATE & HELPERS (pode ser extraído depois p/ um módulo) ===
+  const processedEffectsRef = ref<Set<string>>(new Set());
+
+  type EffectLike = { type: string; payload?: Record<string, any> };
+
+  function isIdempotentEffect(eff: EffectLike) {
+    // apenas efeitos idempotentes entram em dedupe
+    return (
+      eff.type === "POST_MESSAGE" || eff.type === "REFETCH_TASK_FLOW"
+      // FOCUS_NODE removido da lista idempotente para permitir foco pós-aprovação
+    );
+  }
+
+  function effectKey(eff: EffectLike, correlationId?: string) {
+    return [
+      correlationId ?? "no-corr",
+      eff.type,
+      eff.payload?.kind ?? "",
+      eff.payload?.parameters?.nodeId ?? eff.payload?.nodeId ?? "",
+      eff.payload?.summary ?? "",
+    ].join("|");
+  }
+
+  function normalizeConfirmationPayload(
+    eff: EffectLike,
+    correlationId?: string
+  ) {
+    return {
+      kind: eff.payload?.kind ?? "PROPOSE_PATCH",
+      render: eff.payload?.render ?? "chat",
+      summary: eff.payload?.summary ?? "",
+      parameters: eff.payload?.parameters ?? {},
+      nodeId: eff.payload?.parameters?.nodeId ?? eff.payload?.nodeId ?? null,
+      correlationId,
+    };
+  }
+
+  function mapToolToActionType(tool: string): "delete" | "create" | null {
+    switch (tool) {
+      case "deleteNode":
+        return "delete";
+      case "createNode":
+        return "create";
+      default:
+        return null;
+    }
+  }
+
+  const executeSideEffects: {
+    (payload: { effects: SideEffect[]; correlationId: string }): Promise<void>;
+    (effects: SideEffect[], correlationId: string): Promise<void>;
+  } = async (...args: any[]) => {
+    // Support both legacy signature (effects, correlationId)
+    // and the new single-payload signature ({ effects, correlationId })
+    let effects: SideEffect[] = [];
+    let correlationId: string = "";
+
+    if (Array.isArray(args[0])) {
+      effects = args[0] as SideEffect[];
+      correlationId = args[1] as string;
+    } else if (args[0] && typeof args[0] === "object") {
+      effects = (args[0] as any).effects;
+      correlationId = (args[0] as any).correlationId;
+    }
+
+    // A lógica de filtragem foi removida. O código agora continua diretamente daqui.
+
     console.info(
       "[useAgentLogic] executeSideEffects received effects:",
       JSON.stringify(effects, null, 2)
     );
+    try {
+      console.log(
+        "[executeSideEffects] compact summary:",
+        (effects as any[]).map(
+          (e: any) => `${e?.type}@${e?.phase ?? "none"}#${e?.seq ?? "?"}`
+        )
+      );
+    } catch {}
     console.log(
       "[executeSideEffects] ids => incoming:",
       correlationId,
@@ -64,11 +143,14 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       " lastServer:",
       lastServerCorrelationId.value
     );
-    // Adopt server correlationId if we don't have one yet (e.g., page reload -> modal confirm path)
-    if (!currentCorrelationId.value && correlationId) {
+    // Adopt/refresh server correlationId if it differs (server as source of truth)
+    if (correlationId && currentCorrelationId.value !== correlationId) {
       console.log(
-        "[executeSideEffects] adopting server correlationId:",
-        correlationId
+        "[executeSideEffects] adopting/refreshing server correlationId:",
+        correlationId,
+        "(was:",
+        currentCorrelationId.value,
+        ")"
       );
       currentCorrelationId.value = correlationId;
     }
@@ -84,422 +166,333 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
     if (correlationId) {
       lastServerCorrelationId.value = correlationId;
     }
-    if (correlationId !== currentCorrelationId.value) return;
-    // 🔧 Prefer parameters from EXECUTE_ACTION within the same batch (server is source of truth)
-    const firstExecuteAction: any =
-      Array.isArray(effects) &&
-      effects.find((e: any) => e?.type === "EXECUTE_ACTION");
-    const preferExecParams: Record<string, any> | undefined =
-      firstExecuteAction?.payload?.parameters;
-    const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
-    for (const effect of effects) {
-      if (correlationId !== currentCorrelationId.value) break;
-      const parsedEffect = effectSchemas.safeParse(effect);
-      if (!parsedEffect.success) {
-        console.error("[SideEffect validation error]", parsedEffect.error);
-        messages.value.push({
-          role: "system",
-          content: `Erro interno: payload inválido para a ação '${effect.type}'.`,
-        });
-        continue;
-      }
-      try {
-        switch (effect.type) {
-          case "POST_MESSAGE":
-            messages.value.push({
-              role: "agent",
-              content: effect.payload.text,
-            });
-            break;
-          case "FOCUS_NODE": {
-            // Pede ao TaskFlow.vue para animar quando estiver pronto
-            taskFlowStore.nodeToAnimateTo = effect.payload.nodeId;
-            await delay(400); // mantém o sequenciamento de efeitos
-            break;
+    // Ignore effects that don't belong to the active correlation (tolerant check)
+    const isSameCorrelation =
+      !!correlationId &&
+      (correlationId === currentCorrelationId.value ||
+        correlationId === lastServerCorrelationId.value ||
+        correlationId === awaitingApprovalCorrelationId.value);
+
+    if (!isSameCorrelation) return;
+
+    // Build a context for the registry handlers, desacoplado dos stores reais
+    const ctx = {
+      modalStore: {
+        openModal: modalStore.openModal.bind(modalStore),
+        closeModal: modalStore.closeModal.bind(modalStore),
+      },
+      graphStore: {
+        focusNode: (nodeId: string) => {
+          // Mantém o comportamento antigo de animar o grafo
+          (taskFlowStore as any).nodeToAnimateTo = nodeId;
+        },
+        refetchTaskFlow: async () => {
+          console.log(
+            "[graphStore.refetchTaskFlow] invoked (agent-driven refetch)."
+          );
+          if (typeof (taskFlowStore as any).refetchTaskFlow === "function") {
+            await (taskFlowStore as any).refetchTaskFlow();
+          } else {
+            await taskFlowStore.loadTaskFlow(taskIdRef.value);
           }
-
-          case "OPEN_MODAL": {
-            const { nodeId } = effect.payload;
-            const node = taskFlowStore.nodes.find((n) => n.id === nodeId);
-            if (node && !modalStore.isModalOpen(node.type as ModalType)) {
-              modalStore.openModal(
-                node.type as ModalType,
-                { originalData: node.data },
-                nodeId
-              );
-              await delay(200);
-            }
-            break;
-          }
-          case "SHOW_CONFIRMATION": {
-            const p = effect.payload;
-            const correlationHint =
-              correlationId ||
-              currentCorrelationId.value ||
-              lastServerCorrelationId.value ||
-              ""; // ensure string
-
-            // Set approval flags before opening modal or chat confirmation
-            awaitingApproval.value = true;
-            awaitingApprovalCorrelationId.value =
-              correlationHint || correlationId || null;
-
-            // Decide UI a partir do contrato novo
-            const isModal = p?.render === "modal";
-
-            // Resolve node & nodeType so we always know which modal to open
-            const node = taskFlowStore.nodes.find((n) => n.id === p.nodeId);
-            const nodeType = (node?.type as ModalType) ?? ModalType.problem;
-
-            if (isModal) {
-              console.log("[SHOW_CONFIRMATION] opening modal with:", {
-                nodeType,
-                nodeId: p.nodeId,
-                summary: p.summary,
-                diff: p.diff,
-                actionToConfirm: {
-                  tool_name: "nodeTool",
-                  parameters: preferExecParams ?? p.parameters,
-                  nodeId: p.nodeId,
-                  correlationId: correlationHint,
-                },
-              });
-
-              modalStore.openModal(
-                nodeType,
-                {
-                  mode: "confirm",
-                  diffMode: true,
-                  nodeId: p.nodeId,
-                  modalTitle: p.summary,
-                  message: p.summary,
-                  diff: p.diff,
-                  // Nota: o actionToConfirm abaixo usa preferExecParams quando existir,
-                  // garantindo que a confirmação aprove a versão mais recente (ex.: newData do EXECUTE_ACTION).
-                  originalData: node?.data,
-                  actionToConfirm: {
-                    tool_name: "nodeTool",
-                    parameters: preferExecParams ?? p.parameters,
-                    nodeId: p.nodeId,
-                    correlationId: correlationHint,
-                  },
-                  confirmLabel: "Confirmar",
-                  cancelLabel: "Cancelar",
-                },
-                p.nodeId
-              );
-            } else {
-              // Chat approval
-              messages.value.push({
-                role: "confirmation",
-                content: p.summary,
-                action: {
-                  tool_name: "nodeTool",
-                  parameters: preferExecParams ?? p.parameters,
-                  nodeId: p.nodeId,
-                  correlationId: correlationHint || "",
-                },
-              });
-            }
-            break;
-          }
-          case "EXECUTE_ACTION": {
-            const { tool_name, parameters, feedbackMessage } = effect.payload;
-            console.log("[EXECUTE_ACTION] tool:", tool_name);
-            console.log("[EXECUTE_ACTION] parameters:", parameters);
-            // Approval short-circuit
-            if (
-              awaitingApproval.value &&
-              awaitingApprovalCorrelationId.value === correlationId &&
-              !(parameters && parameters.isApprovedUpdate === true)
-            ) {
-              console.warn(
-                "[EXECUTE_ACTION] bloqueado: aguardando aprovação do usuário para este correlationId."
-              );
-              // Não executa a ação ainda; ela será reenviada após o resume com isApprovedUpdate=true
-              break;
-            }
-            isLoading.value = true;
-            try {
-              switch (tool_name) {
-                case "createNode": {
-                  const { nodeType, sourceNodeId, newData } = parameters;
-                  await runAgentAction({
-                    type: "create",
-                    nodeType,
-                    originId: sourceNodeId,
-                    initialData: newData,
-                  });
-                  break;
-                }
-                case "datasource.create": {
-                  const { sourceNodeId, newData } = parameters;
-                  await runAgentAction({
-                    type: "create",
-                    nodeType: "dataSource",
-                    originId: sourceNodeId,
-                    initialData: newData,
-                  });
-                  break;
-                }
-                case "datasource.delete": {
-                  const { nodeId } = parameters;
-                  await runAgentAction({ type: "delete", nodeId });
-                  break;
-                }
-                case "updateNode": {
-                  const { nodeId, newData } = parameters;
-                  await taskFlowStore.updateNodeData(nodeId, newData);
-                  modalStore.closeModal(); // fecha o modal após aplicar a atualização
-                  break;
-                }
-                case "problem.update": {
-                  // parameters may arrive as { newData: {...}, nodeId, ... } or flattened { title, description, nodeId }
-                  const p = parameters as Record<string, any>;
-
-                  // Determine target nodeId (explicit or first problem node)
-                  const targetId =
-                    p.nodeId ??
-                    taskFlowStore.nodes.find((n) => n.type === "problem")?.id;
-                  if (!targetId) {
-                    console.warn(
-                      "problem.update: nó do tipo 'problem' não encontrado."
-                    );
-                    messages.value.push({
-                      role: "system",
-                      content:
-                        "Não encontrei o card de Problema para atualizar — verifique se ele existe.",
-                    });
-                    break;
-                  }
-
-                  // Normalize payload: prefer p.newData when present; otherwise pick only known fields from flat shape
-                  const normalizedData = p.newData ?? {
-                    ...(typeof p.title !== "undefined"
-                      ? { title: p.title }
-                      : {}),
-                    ...(typeof p.description !== "undefined"
-                      ? { description: p.description }
-                      : {}),
-                  };
-
-                  console.log("[problem.update] targetId:", targetId);
-                  console.log(
-                    "[problem.update] normalizedData:",
-                    normalizedData
-                  );
-
-                  if (
-                    !normalizedData ||
-                    Object.keys(normalizedData).length === 0
-                  ) {
-                    console.warn(
-                      "problem.update: payload sem campos válidos para atualizar."
-                    );
-                    messages.value.push({
-                      role: "system",
-                      content:
-                        "Nada para atualizar no Problema (payload vazio).",
-                    });
-                    break;
-                  }
-
-                  await taskFlowStore.updateNodeData(targetId, normalizedData);
-                  modalStore.closeModal(); // fecha modal se estiver aberto
-                  break;
-                }
-                case "deleteNode": {
-                  const { nodeId } = parameters;
-                  await runAgentAction({ type: "delete", nodeId });
-                  break;
-                }
-                case "nodeTool": {
-                  const p = parameters as Record<string, any>;
-                  const op = p?.operation;
-                  const nodeType = p?.nodeType;
-
-                  if (op === "create") {
-                    await runAgentAction({
-                      type: "create",
-                      nodeType: p.nodeType,
-                      originId: p.parentId ?? p.sourceNodeId,
-                      initialData: p.newData,
-                    });
-                    break;
-                  }
-
-                  if (op === "update") {
-                    // If it's the Problem node, reuse the same normalization logic as in "problem.update"
-                    if (nodeType === "problem") {
-                      const targetId =
-                        p.nodeId ??
-                        taskFlowStore.nodes.find((n) => n.type === "problem")
-                          ?.id;
-                      if (!targetId) {
-                        console.warn(
-                          "nodeTool/update: nó do tipo 'problem' não encontrado."
-                        );
-                        messages.value.push({
-                          role: "system",
-                          content:
-                            "Não encontrei o card de Problema para atualizar — verifique se ele existe.",
-                        });
-                        break;
-                      }
-
-                      const normalizedData = p.newData ?? {
-                        ...(typeof p.title !== "undefined"
-                          ? { title: p.title }
-                          : {}),
-                        ...(typeof p.description !== "undefined"
-                          ? { description: p.description }
-                          : {}),
-                      };
-
-                      if (
-                        !normalizedData ||
-                        Object.keys(normalizedData).length === 0
-                      ) {
-                        console.warn(
-                          "nodeTool/update: payload sem campos válidos para atualizar."
-                        );
-                        messages.value.push({
-                          role: "system",
-                          content:
-                            "Nada para atualizar no Problema (payload vazio).",
-                        });
-                        break;
-                      }
-
-                      await taskFlowStore.updateNodeData(
-                        targetId,
-                        normalizedData
-                      );
-                      modalStore.closeModal();
-                      break;
-                    }
-
-                    // Generic update for other node types
-                    if (!p?.nodeId) {
-                      console.warn(
-                        "nodeTool/update: nodeId ausente para atualização genérica."
-                      );
-                      messages.value.push({
-                        role: "system",
-                        content:
-                          "Não foi possível atualizar: nodeId ausente para o update.",
-                      });
-                      break;
-                    }
-
-                    await taskFlowStore.updateNodeData(
-                      p.nodeId,
-                      p.newData ?? {}
-                    );
-                    modalStore.closeModal();
-                    break;
-                  }
-
-                  if (op === "delete") {
-                    const targetId = p?.nodeId;
-                    if (!targetId) {
-                      console.warn("nodeTool/delete: nodeId ausente.");
-                      messages.value.push({
-                        role: "system",
-                        content: "Não foi possível deletar: nodeId ausente.",
-                      });
-                      break;
-                    }
-
-                    // Salvaguarda: não permitir deletar o nó de problema
-                    const targetNode = taskFlowStore.nodes.find(
-                      (n) => n.id === targetId
-                    );
-                    if (targetNode?.type === "problem") {
-                      messages.value.push({
-                        role: "system",
-                        content: "O card de Problema não pode ser deletado.",
-                      });
-                      break;
-                    }
-
-                    await runAgentAction({ type: "delete", nodeId: targetId });
-                    modalStore.closeModal();
-                    break;
-                  }
-
-                  // If other operations arrive via nodeTool in the future, fall back for now
-                  console.warn("nodeTool: operação não suportada:", op);
-                  messages.value.push({
-                    role: "system",
-                    content: `nodeTool: operação não suportada: ${op}`,
-                  });
-                  break;
-                }
-                default: {
-                  console.warn("Ferramenta não mapeada:", tool_name);
-                  messages.value.push({
-                    role: "system",
-                    content: `Ferramenta não suportada: ${tool_name}`,
-                  });
-                }
-              }
-
-              // Clear approval flags if this was an approved update
-              if (parameters && parameters.isApprovedUpdate === true) {
-                awaitingApproval.value = false;
-                awaitingApprovalCorrelationId.value = null;
-              }
-
-              // ✅ Mensagem de sucesso no chat (sempre igual)
-              const successMsg = {
-                role: "agent" as const,
-                content: "✅ Ação concluída",
-              };
+        },
+      },
+      sendResumePayload,
+      pushChatMessage: (msg: any) => {
+        // garante reatividade em watchers rasos
+        messages.value = [...messages.value, msg];
+      },
+      // aliases diretos por nome (opcional)
+      actions: {
+        deleteNode: async ({ nodeId }: { nodeId: string }) => {
+          console.group("[actions.deleteNode]");
+          console.log("nodeId:", nodeId);
+          const beforeNodes = (taskFlowStore as any).nodes
+            ? (taskFlowStore as any).nodes.length
+            : 0;
+          const beforeEdges = (taskFlowStore as any).edges
+            ? (taskFlowStore as any).edges.length
+            : 0;
+          const presentBefore = Array.isArray((taskFlowStore as any).nodes)
+            ? (taskFlowStore as any).nodes.some((n: any) => n?.id === nodeId)
+            : false;
+          console.log(
+            "before → nodes:",
+            beforeNodes,
+            "edges:",
+            beforeEdges,
+            "presentBefore:",
+            presentBefore
+          );
+          try {
+            // 1) Tente usar métodos da store, se existirem
+            if (typeof (taskFlowStore as any).removeNode === "function") {
+              await (taskFlowStore as any).removeNode(nodeId);
+              const afterNodes = (taskFlowStore as any).nodes
+                ? (taskFlowStore as any).nodes.length
+                : 0;
+              const afterEdges = (taskFlowStore as any).edges
+                ? (taskFlowStore as any).edges.length
+                : 0;
+              const presentAfter = Array.isArray((taskFlowStore as any).nodes)
+                ? (taskFlowStore as any).nodes.some(
+                    (n: any) => n?.id === nodeId
+                  )
+                : false;
               console.log(
-                "[EXECUTE_ACTION] pushing success chat message:",
-                successMsg
+                "after  → nodes:",
+                afterNodes,
+                "edges:",
+                afterEdges,
+                "presentAfter:",
+                presentAfter
               );
-              // Use immutable update to ensure reactivity in any shallow watchers
-              messages.value = [...messages.value, successMsg];
-            } catch (e) {
-              messages.value.push({
-                role: "system",
-                content: `Erro ao executar ação: ${(e as Error).message}`,
-              });
-            } finally {
-              isLoading.value = false;
-            }
-            break;
-          }
-          case "CLOSE_MODAL":
-            modalStore.closeModal();
-            break;
-          case "REFETCH_TASK_FLOW":
-            // Sinal enviado pelo agente para recarregar o flow do Supabase (sem reinicializar watchers)
-            if (typeof (taskFlowStore as any).refetchTaskFlow === "function") {
-              await (taskFlowStore as any).refetchTaskFlow();
+              console.groupEnd();
+            } else if (
+              typeof (taskFlowStore as any).deleteNode === "function"
+            ) {
+              await (taskFlowStore as any).deleteNode(nodeId);
+              const afterNodes = (taskFlowStore as any).nodes
+                ? (taskFlowStore as any).nodes.length
+                : 0;
+              const afterEdges = (taskFlowStore as any).edges
+                ? (taskFlowStore as any).edges.length
+                : 0;
+              const presentAfter = Array.isArray((taskFlowStore as any).nodes)
+                ? (taskFlowStore as any).nodes.some(
+                    (n: any) => n?.id === nodeId
+                  )
+                : false;
+              console.log(
+                "after  → nodes:",
+                afterNodes,
+                "edges:",
+                afterEdges,
+                "presentAfter:",
+                presentAfter
+              );
+              console.groupEnd();
             } else {
-              // fallback para compatibilidade antiga
-              await taskFlowStore.loadTaskFlow(taskIdRef.value);
+              // 2) Fallback: mutação direta e reativa
+              const prevCount = taskFlowStore.nodes.length;
+              (taskFlowStore as any).nodes = taskFlowStore.nodes.filter(
+                (n: any) => n.id !== nodeId
+              );
+              (taskFlowStore as any).edges = taskFlowStore.edges.filter(
+                (e: any) => e.source !== nodeId && e.target !== nodeId
+              );
+              console.info(
+                "[useAgentLogic] Fallback delete applied. Nodes:",
+                prevCount,
+                "→",
+                taskFlowStore.nodes.length
+              );
+              const afterNodes = (taskFlowStore as any).nodes
+                ? (taskFlowStore as any).nodes.length
+                : 0;
+              const afterEdges = (taskFlowStore as any).edges
+                ? (taskFlowStore as any).edges.length
+                : 0;
+              const presentAfter = Array.isArray((taskFlowStore as any).nodes)
+                ? (taskFlowStore as any).nodes.some(
+                    (n: any) => n?.id === nodeId
+                  )
+                : false;
+              console.log(
+                "after  → nodes:",
+                afterNodes,
+                "edges:",
+                afterEdges,
+                "presentAfter:",
+                presentAfter
+              );
+              console.groupEnd();
             }
-            break;
-          default: {
-            // Isto só acontece se aparecer um novo tipo não contemplado acima
-            const _exhaustiveCheck: never = effect;
-            messages.value.push({
+            // 3) Como segurança, limpe alvo de animação se era o nó deletado
+            if ((taskFlowStore as any).nodeToAnimateTo === nodeId) {
+              (taskFlowStore as any).nodeToAnimateTo = null;
+            }
+          } catch (e) {
+            console.error(
+              "[actions.deleteNode] primary path failed, falling back to runAgentAction.",
+              e
+            );
+            // 4) Último fallback: roteador genérico
+            try {
+              await runAgentAction({ type: "delete", nodeId });
+              const afterNodes = (taskFlowStore as any).nodes
+                ? (taskFlowStore as any).nodes.length
+                : 0;
+              const afterEdges = (taskFlowStore as any).edges
+                ? (taskFlowStore as any).edges.length
+                : 0;
+              const presentAfter = Array.isArray((taskFlowStore as any).nodes)
+                ? (taskFlowStore as any).nodes.some(
+                    (n: any) => n?.id === nodeId
+                  )
+                : false;
+              console.log(
+                "after  → nodes:",
+                afterNodes,
+                "edges:",
+                afterEdges,
+                "presentAfter:",
+                presentAfter
+              );
+              console.groupEnd();
+            } catch (e2) {
+              console.error(
+                "[actions.deleteNode] runAgentAction fallback failed:",
+                e2
+              );
+              throw e2;
+            }
+          }
+        },
+      },
+      // utilidades extras para handlers que precisem coordenar aprovação/clarify
+      getCorrelation: () => ({
+        current: currentCorrelationId.value,
+        lastServer: lastServerCorrelationId.value,
+        incoming: correlationId,
+      }),
+      setApprovalState: (on: boolean, corrId?: string) => {
+        awaitingApproval.value = on;
+        awaitingApprovalCorrelationId.value = on
+          ? corrId || correlationId || currentCorrelationId.value || null
+          : null;
+      },
+      setClarify: (
+        payload: {
+          reason?: string;
+          questions: Array<{ key: string; label: string; required?: boolean }>;
+          context?: Record<string, any>;
+        },
+        corrId?: string
+      ) => {
+        clarifyCorrelationId.value =
+          corrId || correlationId || currentCorrelationId.value || null;
+        clarifyPending.value = {
+          reason: payload?.reason,
+          questions: (payload?.questions ?? []).map((q) => ({
+            key: q.key,
+            label: q.label,
+            required: !!q.required,
+          })),
+          context: payload?.context ?? {},
+        };
+      },
+    } as any;
+
+    // Helper to apply uiHints for post-approval effects (focus, successMessage)
+    const applyUiHints = async (effs: SideEffect[]) => {
+      for (const ef of effs as any[]) {
+        if ((ef as any).phase === "post" && (ef as any).uiHints) {
+          const hints = (ef as any).uiHints;
+          if (
+            hints.focusNodeId &&
+            taskFlowStore.nodes.some((n: any) => n.id === hints.focusNodeId)
+          ) {
+            try {
+              console.log(
+                "[applyUiHints] focusing via uiHints:",
+                hints.focusNodeId
+              );
+              await ctx.graphStore.focusNode(hints.focusNodeId);
+            } catch (e) {
+              console.error("[useAgentLogic] uiHints focus failed:", e);
+            }
+          }
+          if (hints.successMessage) {
+            console.log("[applyUiHints] successMessage:", hints.successMessage);
+            ctx.pushChatMessage?.({
               role: "system",
-              content: `Efeito desconhecido ou não suportado.`,
+              content: hints.successMessage,
             });
           }
         }
-      } catch (e) {
-        messages.value.push({
-          role: "system",
-          content: `Erro ao executar efeito: ${(e as Error).message}`,
-        });
       }
+    };
+
+    try {
+      await (effectRegistry as any).dispatch(effects, ctx);
+      console.log(
+        "[executeSideEffects] effectRegistry.dispatch OK for",
+        effects.length,
+        "effects."
+      );
+      // Apply UI hints (focus, success messages) for post-approval effects
+      await applyUiHints(effects);
+    } catch (err) {
+      console.error(
+        "[useAgentLogic] effectRegistry.dispatch failed (corr:",
+        correlationId,
+        ")",
+        err
+      );
+      messages.value.push({
+        role: "system",
+        content: `Erro ao executar efeitos: ${(err as Error).message}`,
+      });
     }
+  };
+
+  // Helper: parser para respostas de clarify pelo chat
+  const tryConsumeClarifyAnswer = async (raw: string) => {
+    if (!clarifyPending.value) return false;
+    const questions = clarifyPending.value.questions || [];
+    const requiredKeys = new Set(
+      questions.filter((q) => q.required).map((q) => q.key)
+    );
+
+    // Parse linhas no formato "key: value"
+    const entries: Record<string, string> = {};
+    raw.split(/\n|\r/).forEach((line) => {
+      const m = line.match(/^\s*([^:]+)\s*:\s*(.+)\s*$/);
+      if (m) {
+        const k = m[1].trim();
+        const v = m[2].trim();
+        entries[k] = v;
+      }
+    });
+
+    const providedKeys = Object.keys(entries);
+    if (providedKeys.length === 0) return false; // nada pra consumir
+
+    // Restrinja às chaves esperadas
+    const answers: Record<string, any> = {};
+    for (const q of questions) {
+      if (entries[q.key] != null) answers[q.key] = entries[q.key];
+    }
+
+    const missing = [...requiredKeys].filter((k) => answers[k] == null);
+    if (missing.length > 0) {
+      messages.value.push({
+        role: "system",
+        content: `Faltaram campos obrigatórios: ${missing.join(
+          ", "
+        )}. Responda novamente com essas chaves no formato 'chave: valor'.`,
+      });
+      return true; // consumiu, mas incompleto — não envia resume ainda
+    }
+
+    // Tudo ok: envia o resume com ASK_CLARIFY_RESULT
+    const safeCorrelationId =
+      clarifyCorrelationId.value ||
+      currentCorrelationId.value ||
+      lastServerCorrelationId.value ||
+      null;
+
+    await sendResumePayload({
+      correlationId: safeCorrelationId || undefined,
+      taskId: taskIdRef.value,
+      resume: { value: { kind: "ASK_CLARIFY_RESULT", answers } },
+    });
+
+    // limpa estado de clarify
+    clarifyPending.value = null;
+    clarifyCorrelationId.value = null;
+    return true;
   };
 
   const sendMessage = async (userInput: string | object) => {
@@ -507,6 +500,15 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
     if (typeof userInput === "string") {
       if (!userInput.trim()) return;
       messages.value.push({ role: "user", content: userInput });
+    }
+    // Se estamos no fluxo de clarify, tenta consumir esta resposta
+    if (clarifyPending.value && typeof userInput === "string") {
+      const consumed = await tryConsumeClarifyAnswer(userInput);
+      if (consumed) {
+        // Já tratou: não mande esta mensagem para o agente agora
+        isLoading.value = false;
+        return;
+      }
     }
     isLoading.value = true;
     const newCorrelationId = uuidv4();
@@ -561,8 +563,14 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       const uiContext = {
         activeModal: modalStore.getActiveModalType
           ? {
-              type: modalStore.getActiveModalType,
-              nodeId: modalStore.getActiveNodeId,
+              type:
+                typeof (modalStore as any).getActiveModalType === "function"
+                  ? (modalStore as any).getActiveModalType()
+                  : (modalStore as any).getActiveModalType,
+              nodeId:
+                typeof (modalStore as any).getActiveNodeId === "function"
+                  ? (modalStore as any).getActiveNodeId()
+                  : (modalStore as any).getActiveNodeId,
             }
           : null,
       };
@@ -591,14 +599,72 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       } else {
         console.log("[sendMessage] no correlationId in response");
       }
+      // --- Handle pending confirmation from server (render as chat card) ---
+      if (
+        response?.correlationId === currentCorrelationId.value &&
+        response?.pending_confirmation
+      ) {
+        const proposal = response.pending_confirmation;
+
+        // 1) FOCO ANTES DO CARD (sempre que tivermos um nodeId)
+        const toFocus =
+          proposal?.parameters?.nodeId ??
+          proposal?.parameters?.parameters?.nodeId; // fallback defensivo
+        if (toFocus) {
+          try {
+            (taskFlowStore as any).nodeToAnimateTo = String(toFocus);
+            console.log(
+              "[sendMessage] Focused node before confirmation:",
+              toFocus
+            );
+          } catch (e) {
+            console.warn(
+              "[sendMessage] Failed to focus before confirmation:",
+              e
+            );
+          }
+        }
+
+        // 2) Monta o payload da ação de aprovação
+        const actionPayload = {
+          tool_name: proposal?.parameters?.operation ? "nodeTool" : "unknown",
+          parameters: proposal?.parameters || {},
+          nodeId: proposal?.parameters?.nodeId,
+          correlationId: response.correlationId,
+        };
+
+        // 3) Agora exibe o card de confirmação no chat
+        messages.value = [
+          ...messages.value,
+          {
+            role: "confirmation",
+            content: proposal?.summary || "Você confirma a ação proposta?",
+            action: actionPayload,
+          },
+        ];
+
+        // 4) Marca estado de aprovação pendente para esta correlação
+        awaitingApproval.value = true;
+        awaitingApprovalCorrelationId.value = response.correlationId;
+      }
       if (
         response.correlationId === currentCorrelationId.value &&
         response.sideEffects
       ) {
-        await executeSideEffects(
-          response.sideEffects as SideEffect[],
-          response.correlationId
-        );
+        try {
+          const sidefx = Array.isArray(response?.sideEffects)
+            ? response.sideEffects.map((e: any) => ({
+                type: e?.type,
+                seq: e?.seq,
+                phase: e?.phase,
+              }))
+            : [];
+          console.log("[sendMessage] server sideEffects:", sidefx);
+        } catch {}
+        await executeSideEffects({
+          effects: response.sideEffects as SideEffect[],
+          correlationId: response.correlationId,
+        });
       }
     } catch (error: any) {
       messages.value.push({
@@ -662,6 +728,16 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       });
 
       console.log("[sendResumePayload] response:", response);
+      try {
+        const sidefx = Array.isArray(response?.sideEffects)
+          ? response.sideEffects.map((e: any) => ({
+              type: e?.type,
+              seq: e?.seq,
+              phase: e?.phase,
+            }))
+          : [];
+        console.log("[sendResumePayload] server sideEffects:", sidefx);
+      } catch {}
 
       if (response?.correlationId) {
         lastServerCorrelationId.value = response.correlationId;
@@ -680,10 +756,10 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
         response?.correlationId === currentCorrelationId.value &&
         response?.sideEffects
       ) {
-        await executeSideEffects(
-          response.sideEffects as SideEffect[],
-          response.correlationId
-        );
+        await executeSideEffects({
+          effects: response.sideEffects as SideEffect[],
+          correlationId: response.correlationId,
+        });
       }
     } catch (error: any) {
       messages.value.push({
@@ -755,18 +831,8 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       return;
     }
 
-    // 🔧 Mesmo shape do visual: confirmado + approved_action
-    const resumeValue = {
-      confirmed: true,
-      approved_action: {
-        tool_name: act.tool_name,
-        parameters: {
-          ...(act.parameters ?? {}),
-          isApprovedUpdate: true,
-        },
-        nodeId: act.nodeId,
-      },
-    };
+    // 🔧 Agora resumeValue é apenas um booleano
+    const resumeValue = true;
 
     console.log("[handleConfirmation] Sending resume with value:", resumeValue);
 
@@ -840,8 +906,8 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       return;
     }
 
-    // 🔧 Para cancelamento basta confirmed:false
-    const resumeValue = { confirmed: false };
+    // 🔧 Para cancelamento agora resumeValue é apenas false
+    const resumeValue = false;
 
     console.log("[handleCancellation] Sending resume with value:", resumeValue);
 
@@ -948,18 +1014,8 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       return;
     }
 
-    // 🔧 Formato que o humanApprovalNode espera ao retomar do interrupt:
-    const resumeValue = {
-      confirmed: true,
-      approved_action: {
-        tool_name: act.tool_name,
-        parameters: {
-          ...(act.parameters ?? {}),
-          isApprovedUpdate: true,
-        },
-        nodeId: act.nodeId,
-      },
-    };
+    // 🔧 Agora resumeValue é apenas um booleano
+    const resumeValue = true;
 
     console.log(
       "[handleModalConfirmation] Enviando resume com value:",
@@ -975,6 +1031,9 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
       taskId: safeTaskId,
       resume: { value: resumeValue },
     });
+    // Clear approval flags after sending confirmation (modal path)
+    awaitingApproval.value = false;
+    awaitingApprovalCorrelationId.value = null;
   };
 
   return {
@@ -985,5 +1044,7 @@ export function useAgentLogic(taskIdRef: Ref<string>) {
     handleConfirmation,
     handleCancellation,
     handleModalConfirmation,
+    awaitingApproval,
+    clarifyPending,
   };
 }

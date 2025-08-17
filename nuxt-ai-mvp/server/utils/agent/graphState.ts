@@ -3,6 +3,7 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { AgentAction, AgentFinish } from "@langchain/core/agents";
 import type { SideEffect } from "~/lib/sideEffects";
 import { Annotation } from "@langchain/langgraph";
+import type { ApprovalPending, ClarifyRequest, ClarifyResult } from "./types";
 
 // Representa a tupla de [ação da ferramenta, observação/resultado]
 export type AgentStep = [AgentAction, string];
@@ -14,28 +15,8 @@ export interface PlanStep {
   rationale: string; // A justificativa da IA para este passo
 }
 
-// Resultado do passo de ASK_CLARIFY
-export type ClarifyResult = {
-  kind: "ASK_CLARIFY";
-  answers: Record<string, any>;
-};
-
-// Proposta de ação aguardando confirmação do usuário (server‑driven)
-export interface ActionProposal {
-  tool_name: string; // normalmente "nodeTool"
-  parameters: any; // payload idempotente para execução
-  render: "chat" | "modal"; // como aprovar
-  summary: string; // resumo curto para UI
-  diff?: any; // estrutura de diff (se houver)
-  effects?: SideEffect[]; // efeitos sugeridos
-  kind?: "ASK_CLARIFY" | "PROPOSE_PATCH"; // tipo de proposta
-  questions?: Array<{
-    id: string;
-    label: string;
-    placeholder?: string;
-    required?: boolean;
-  }>; // para ASK_CLARIFY
-}
+// Proposta de ação aguardando confirmação do usuário (compatível)
+export type ActionProposal = ApprovalPending;
 
 // O estado unificado para o novo grafo híbrido
 export interface PlanExecuteState {
@@ -64,9 +45,10 @@ export interface PlanExecuteState {
   agent_outcome?: AgentAction | AgentFinish;
   intermediate_steps: AgentStep[];
   sideEffects: SideEffect[];
-  pending_confirmation?: ActionProposal | null;
+  pending_confirmation?: ApprovalPending | null;
 
   // Resultado de perguntas de esclarecimento (ASK_CLARIFY)
+  clarify_request?: ClarifyRequest | null;
   clarify_result?: ClarifyResult | null;
 
   // Execução direta (catálogo)
@@ -137,11 +119,18 @@ export const PlanExecuteAnnotation = Annotation.Root({
     reducer: (x: SideEffect[] | undefined, y: SideEffect[]) => y,
     default: () => [],
   }),
-  pending_confirmation: Annotation<ActionProposal | null>({
+  pending_confirmation: Annotation<ApprovalPending | null>({
     reducer: (
-      currentValue: ActionProposal | null,
-      newValue: ActionProposal | null
+      currentValue: ApprovalPending | null,
+      newValue: ApprovalPending | null
     ) => newValue ?? null,
+    default: () => null,
+  }),
+  clarify_request: Annotation<ClarifyRequest | null>({
+    reducer: (
+      _current: ClarifyRequest | null,
+      incoming: ClarifyRequest | null
+    ) => incoming ?? null,
     default: () => null,
   }),
   clarify_result: Annotation<ClarifyResult | null>({

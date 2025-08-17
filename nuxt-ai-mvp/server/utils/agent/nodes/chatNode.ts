@@ -77,21 +77,17 @@ export async function chatNode(
     ];
 
     return {
-      sideEffects: [{ type: "POST_MESSAGE", payload: { text } }],
       // Substitui o histórico antigo pelo novo, evitando duplicações
       messages: newMessages,
+      input: "",
     };
   } catch (error) {
     console.error("[chatNode] Erro ao invocar o modelo:", error);
+    const errorMsg = new AIMessage("Desculpe, ocorreu um erro ao responder.");
     return {
-      sideEffects: [
-        {
-          type: "POST_MESSAGE",
-          payload: { text: "Desculpe, ocorreu um erro ao responder." },
-        },
-      ],
-      // Retorna o histórico como estava antes do erro
-      messages: state.messages,
+      // Anexa uma mensagem de erro no histórico para manter a UI em sincronia sem sideEffects
+      messages: [...(state.messages || []), errorMsg],
+      input: "",
     };
   }
 }

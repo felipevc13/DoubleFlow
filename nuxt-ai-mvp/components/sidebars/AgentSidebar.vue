@@ -37,8 +37,10 @@
           <!-- END DEBUG INFO -->
 
           <ActionConfirmation
-            v-if="msg.role === 'confirmation' && msg.action"
+            v-if="isConfirmationMessage(msg)"
+            data-test="confirmation-message"
             :action="ensureAction(msg.action)"
+            :displayMessage="msg.content"
             @confirm="handleConfirmation(msg.action)"
             @cancel="handleCancellation(msg.action)"
           />
@@ -130,20 +132,43 @@ import ActionConfirmation from "~/components/agent/ActionConfirmation.vue";
 import { useSupabaseClient } from "#imports";
 import type { User } from "@supabase/supabase-js";
 
-// Minimal ActionProposal type shape expected by ActionConfirmation
+// Message shape including confirmation items injected by useAgentLogic
+type ChatMessage =
+  | { role: "user"; content: string }
+  | { role: "agent"; content: string }
+  | { role: "system"; content: string }
+  | {
+      role: "confirmation";
+      content: string; // summary
+      action: {
+        tool_name: string;
+        parameters: Record<string, any>;
+        nodeId?: string;
+        correlationId?: string;
+        // optional extra fields that may come from backend
+        approvalStyle?: "chat" | "modal" | string;
+        diffFields?: string[] | Record<string, any>;
+      };
+    };
+
+// Minimal ActionProposal type shape expected by ActionConfirmation (sem displayMessage)
 type ActionProposal = {
   tool_name: string;
   parameters: Record<string, any>;
-  displayMessage: string;
 } & Record<string, any>;
 
 function ensureAction(action: any): ActionProposal {
   return {
     tool_name: action?.tool_name ?? "",
     parameters: action?.parameters ?? {},
-    displayMessage: action?.displayMessage ?? "Confirmar esta ação?",
     ...action,
   } as ActionProposal;
+}
+
+function isConfirmationMessage(
+  msg: any
+): msg is Extract<ChatMessage, { role: "confirmation" }> {
+  return msg && msg.role === "confirmation" && !!msg.action;
 }
 
 const props = defineProps({
@@ -203,6 +228,9 @@ const {
   handleCancellation,
 } = useAgentLogic(taskIdRef);
 
+// Inform TS that messages may carry confirmation entries
+(messages as unknown as { value: ChatMessage[] }).value;
+
 // Limpa as mensagens quando o taskId muda
 watch(
   () => props.taskId,
@@ -239,10 +267,11 @@ const messageClass = (role: "user" | "agent" | "system") => ({
   "chat-end": role === "user",
 });
 
-const bubbleClass = (role: "user" | "agent" | "system") => {
+const bubbleClass = (role: "user" | "agent" | "system" | "confirmation") => {
   if (role === "user") return "flex justify-end w-full";
   if (role === "agent") return "flex justify-start w-full";
   if (role === "system") return "flex justify-start w-full";
+  return "flex justify-start w-full";
 };
 
 const handleSend = () => {
@@ -269,6 +298,15 @@ const autoResize = (event: Event) => {
 watch(
   messages,
   async () => {
+    const hasConfirmation = messages.value.some(
+      (m: any) => m?.role === "confirmation"
+    );
+    if (hasConfirmation) {
+      console.log(
+        "[AgentSidebar] Detected confirmation message(s):",
+        messages.value.filter((m: any) => m?.role === "confirmation")
+      );
+    }
     console.log("[AgentSidebar] Messages updated:", messages.value);
     await nextTick();
     if (chatContainer.value) {
